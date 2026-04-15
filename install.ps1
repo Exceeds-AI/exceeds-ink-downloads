@@ -1,13 +1,13 @@
 param(
-    [string]$Version = $(if ($env:AI_INK_VERSION) { $env:AI_INK_VERSION } else { "latest" }),
-    [string]$Repo = $(if ($env:AI_INK_REPO) { $env:AI_INK_REPO } else { "Exceeds-AI/exceeds-ink-downloads" }),
-    [string]$DownloadBase = $env:AI_INK_DOWNLOAD_BASE_URL,
-    [string]$InstallDir = $(if ($env:AI_INK_INSTALL_DIR) { $env:AI_INK_INSTALL_DIR } else { (Join-Path $HOME ".ai-ink\bin") }),
+    [string]$Version = $(if ($env:EXCEEDS_INK_VERSION) { $env:EXCEEDS_INK_VERSION } else { "latest" }),
+    [string]$Repo = $(if ($env:EXCEEDS_INK_REPO) { $env:EXCEEDS_INK_REPO } else { "Exceeds-AI/exceeds-ink-downloads" }),
+    [string]$DownloadBase = $env:EXCEEDS_INK_DOWNLOAD_BASE_URL,
+    [string]$InstallDir = $(if ($env:EXCEEDS_INK_INSTALL_DIR) { $env:EXCEEDS_INK_INSTALL_DIR } else { (Join-Path $HOME ".exceeds-ink\bin") }),
     [switch]$BinaryOnly,
-    [string]$CompatEndpoint = $env:AI_INK_COMPAT_ENDPOINT,
-    [string]$OtlpHttpEndpoint = $env:AI_INK_OTLP_HTTP_ENDPOINT,
-    [string]$OtlpGrpcEndpoint = $env:AI_INK_OTLP_GRPC_ENDPOINT,
-    [string]$ApiKey = $env:AI_INK_API_KEY
+    [string]$CompatEndpoint = $env:EXCEEDS_INK_COMPAT_ENDPOINT,
+    [string]$OtlpHttpEndpoint = $env:EXCEEDS_INK_OTLP_HTTP_ENDPOINT,
+    [string]$OtlpGrpcEndpoint = $env:EXCEEDS_INK_OTLP_GRPC_ENDPOINT,
+    [string]$ApiKey = $env:EXCEEDS_INK_API_KEY
 )
 
 Set-StrictMode -Version Latest
@@ -43,7 +43,7 @@ function Resolve-Version {
     $release = Invoke-RestMethod -Headers @{ Accept = "application/vnd.github+json" } -Uri "https://api.github.com/repos/$Repository/releases/latest"
     if (-not $release.tag_name) {
         if ($AssetBase) {
-            throw "Failed to resolve the latest release for $Repository. Set AI_INK_VERSION or publish $($AssetBase.TrimEnd('/'))/LATEST."
+            throw "Failed to resolve the latest release for $Repository. Set EXCEEDS_INK_VERSION or publish $($AssetBase.TrimEnd('/'))/LATEST."
         }
         throw "Failed to resolve the latest release for $Repository"
     }
@@ -91,20 +91,20 @@ function Resolve-EffectiveEndpoints {
     if (-not $hasOtlp -and -not $hasCompat) {
         return @{ Otlp = $DefaultOtlp; Compat = $DefaultCompat }
     }
-    throw "Set both AI_INK_OTLP_HTTP_ENDPOINT and AI_INK_COMPAT_ENDPOINT to override the collector, or set neither to use the default Exceeds Vercel URLs."
+    throw "Set both EXCEEDS_INK_OTLP_HTTP_ENDPOINT and EXCEEDS_INK_COMPAT_ENDPOINT to override the collector, or set neither to use the default Exceeds Vercel URLs."
 }
 
-$binaryOnlyRequested = $BinaryOnly.IsPresent -or (Test-EnvFlag -Value $env:AI_INK_BINARY_ONLY)
+$binaryOnlyRequested = $BinaryOnly.IsPresent -or (Test-EnvFlag -Value $env:EXCEEDS_INK_BINARY_ONLY)
 
 $resolvedVersion = Resolve-Version -RequestedVersion $Version -Repository $Repo -AssetBase $DownloadBase
 $target = Get-Target
-$asset = "ai-ink_${resolvedVersion}_${target}.zip"
+$asset = "exceeds-ink_${resolvedVersion}_${target}.zip"
 if ($DownloadBase) {
     $baseUrl = "$($DownloadBase.TrimEnd('/'))/v$resolvedVersion"
 } else {
     $baseUrl = "https://github.com/$Repo/releases/download/v$resolvedVersion"
 }
-$tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ai-ink-install-" + [System.Guid]::NewGuid().ToString("n"))
+$tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("exceeds-ink-install-" + [System.Guid]::NewGuid().ToString("n"))
 
 try {
     New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
@@ -129,13 +129,13 @@ try {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     Expand-Archive -Path $archivePath -DestinationPath $tmpDir -Force
 
-    $binaryPath = Join-Path $InstallDir "ai-ink.exe"
-    Copy-Item -Force (Join-Path $tmpDir "ai-ink.exe") $binaryPath
-    Write-Host "Installed ai-ink to $binaryPath"
+    $binaryPath = Join-Path $InstallDir "exceeds-ink.exe"
+    Copy-Item -Force (Join-Path $tmpDir "exceeds-ink.exe") $binaryPath
+    Write-Host "Installed exceeds-ink to $binaryPath"
 
     if (-not $binaryOnlyRequested) {
         $eff = Resolve-EffectiveEndpoints -Otlp $OtlpHttpEndpoint -Compat $CompatEndpoint -DefaultOtlp $DefaultOtlpHttp -DefaultCompat $DefaultCompat
-        Write-Host "Running ai-ink setup (collector: Exceeds Vercel or your overrides)..."
+        Write-Host "Running exceeds-ink setup (collector: Exceeds Vercel or your overrides)..."
         $setupArgs = @(
             "setup",
             "--otlp-http-endpoint", $eff.Otlp,
@@ -149,7 +149,7 @@ try {
         }
         & $binaryPath @setupArgs
 
-        Write-Host "Running ai-ink install --all..."
+        Write-Host "Running exceeds-ink install --all..."
         $installArgs = @(
             "install", "--all",
             "--otlp-http-endpoint", $eff.Otlp,
@@ -167,18 +167,18 @@ try {
     $pathEntries = @($env:Path -split ";" | Where-Object { $_ })
     if (-not ($pathEntries -contains $InstallDir)) {
         Write-Host ""
-        Write-Host "Add ai-ink to your user PATH for future shells:"
+        Write-Host "Add exceeds-ink to your user PATH for future shells:"
         Write-Host ('  [Environment]::SetEnvironmentVariable("Path", "{0};" + [Environment]::GetEnvironmentVariable("Path", "User"), "User")' -f $InstallDir)
     }
 
     Write-Host ""
     Write-Host "Next steps:"
-    Write-Host "  1. Run 'ai-ink --version' in a new shell to confirm the install."
+    Write-Host "  1. Run 'exceeds-ink --version' in a new shell to confirm the install."
     if ($binaryOnlyRequested) {
-        Write-Host "  2. Run 'ai-ink setup' / 'ai-ink install' as needed, or re-run this installer without -BinaryOnly."
-        Write-Host "  3. Run 'ai-ink init' inside each repo you want to track."
+        Write-Host "  2. Run 'exceeds-ink setup' / 'exceeds-ink install' as needed, or re-run this installer without -BinaryOnly."
+        Write-Host "  3. Run 'exceeds-ink init' inside each repo you want to track."
     } else {
-        Write-Host "  2. Run 'ai-ink init' inside each repo you want to track."
+        Write-Host "  2. Run 'exceeds-ink init' inside each repo you want to track."
     }
     Write-Host "  On Windows, repo hooks require Git Bash (`bash`) on PATH."
     if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq "Arm64") {

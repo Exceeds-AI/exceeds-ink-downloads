@@ -5,22 +5,22 @@ set -eu
 DEFAULT_OTLP_HTTP="https://exceeds-ink.vercel.app/api/v1/otlp"
 DEFAULT_COMPAT="https://exceeds-ink.vercel.app/api/v1/ingest"
 
-REPO="${AI_INK_REPO:-Exceeds-AI/exceeds-ink-downloads}"
-INSTALL_DIR="${AI_INK_INSTALL_DIR:-$HOME/.ai-ink/bin}"
-VERSION="${AI_INK_VERSION:-latest}"
-DOWNLOAD_BASE="${AI_INK_DOWNLOAD_BASE_URL:-}"
-COMPAT_ENDPOINT="${AI_INK_COMPAT_ENDPOINT:-}"
-OTLP_HTTP_ENDPOINT="${AI_INK_OTLP_HTTP_ENDPOINT:-}"
-OTLP_GRPC_ENDPOINT="${AI_INK_OTLP_GRPC_ENDPOINT:-}"
-API_KEY="${AI_INK_API_KEY:-}"
+REPO="${EXCEEDS_INK_REPO:-Exceeds-AI/exceeds-ink-downloads}"
+INSTALL_DIR="${EXCEEDS_INK_INSTALL_DIR:-$HOME/.exceeds-ink/bin}"
+VERSION="${EXCEEDS_INK_VERSION:-latest}"
+DOWNLOAD_BASE="${EXCEEDS_INK_DOWNLOAD_BASE_URL:-}"
+COMPAT_ENDPOINT="${EXCEEDS_INK_COMPAT_ENDPOINT:-}"
+OTLP_HTTP_ENDPOINT="${EXCEEDS_INK_OTLP_HTTP_ENDPOINT:-}"
+OTLP_GRPC_ENDPOINT="${EXCEEDS_INK_OTLP_GRPC_ENDPOINT:-}"
+API_KEY="${EXCEEDS_INK_API_KEY:-}"
 BINARY_ONLY=0
 
 usage() {
   cat <<'EOF'
 Usage: curl -fsSL https://raw.githubusercontent.com/Exceeds-AI/exceeds-ink-downloads/main/install.sh | sh
 
-By default this installs the binary, runs `ai-ink setup`, then `ai-ink install --all` against the
-public Exceeds Vercel collector. Afterward run `ai-ink init` in each git repo you want to track.
+By default this installs the binary, runs `exceeds-ink setup`, then `exceeds-ink install --all` against the
+public Exceeds Vercel collector. Afterward run `exceeds-ink init` in each git repo you want to track.
 
 Optional flags:
   --version <version>             Install a specific version (for example: 0.1.0)
@@ -85,7 +85,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-case "$(printf '%s' "${AI_INK_BINARY_ONLY:-}" | tr '[:upper:]' '[:lower:]')" in
+case "$(printf '%s' "${EXCEEDS_INK_BINARY_ONLY:-}" | tr '[:upper:]' '[:lower:]')" in
   1|true|yes|on) BINARY_ONLY=1 ;;
 esac
 
@@ -117,7 +117,7 @@ resolve_version() {
   if [ -z "$latest_version" ]; then
     echo "Failed to resolve latest release for $REPO" >&2
     if [ -n "$DOWNLOAD_BASE" ]; then
-      echo "Set AI_INK_VERSION or publish ${DOWNLOAD_BASE%/}/LATEST." >&2
+      echo "Set EXCEEDS_INK_VERSION or publish ${DOWNLOAD_BASE%/}/LATEST." >&2
     fi
     exit 1
   fi
@@ -183,7 +183,7 @@ resolve_effective_endpoints() {
     EFF_COMPAT="$DEFAULT_COMPAT"
     return
   fi
-  echo "Set both AI_INK_OTLP_HTTP_ENDPOINT and AI_INK_COMPAT_ENDPOINT to override the collector, or set neither to use the default Exceeds Vercel URLs." >&2
+  echo "Set both EXCEEDS_INK_OTLP_HTTP_ENDPOINT and EXCEEDS_INK_COMPAT_ENDPOINT to override the collector, or set neither to use the default Exceeds Vercel URLs." >&2
   exit 1
 }
 
@@ -191,7 +191,7 @@ run_setup_and_install() {
   install_path="$1"
   resolve_effective_endpoints
 
-  echo "Running ai-ink setup (collector: Exceeds Vercel or your overrides)..."
+  echo "Running exceeds-ink setup (collector: Exceeds Vercel or your overrides)..."
   set -- "$install_path" setup \
     --otlp-http-endpoint "$EFF_OTLP_HTTP" \
     --compat-endpoint "$EFF_COMPAT"
@@ -203,7 +203,7 @@ run_setup_and_install() {
   fi
   "$@"
 
-  echo "Running ai-ink install --all..."
+  echo "Running exceeds-ink install --all..."
   set -- "$install_path" install --all \
     --otlp-http-endpoint "$EFF_OTLP_HTTP" \
     --compat-endpoint "$EFF_COMPAT"
@@ -223,7 +223,7 @@ need_cmd awk
 
 TARGET="$(detect_target)"
 RESOLVED_VERSION="$(resolve_version)"
-ASSET="ai-ink_${RESOLVED_VERSION}_${TARGET}.tar.gz"
+ASSET="exceeds-ink_${RESOLVED_VERSION}_${TARGET}.tar.gz"
 if [ -n "$DOWNLOAD_BASE" ]; then
   BASE_URL="${DOWNLOAD_BASE%/}/v${RESOLVED_VERSION}"
 else
@@ -250,11 +250,11 @@ verify_checksum "$ARCHIVE_PATH" "$CHECKSUM_PATH"
 
 mkdir -p "$INSTALL_DIR"
 tar -xzf "$ARCHIVE_PATH" -C "$TMP_DIR"
-install_path="$INSTALL_DIR/ai-ink"
-cp "$TMP_DIR/ai-ink" "$install_path"
+install_path="$INSTALL_DIR/exceeds-ink"
+cp "$TMP_DIR/exceeds-ink" "$install_path"
 chmod 755 "$install_path"
 
-echo "Installed ai-ink to $install_path"
+echo "Installed exceeds-ink to $install_path"
 
 if [ "$BINARY_ONLY" != "1" ]; then
   run_setup_and_install "$install_path"
@@ -265,17 +265,17 @@ case ":$PATH:" in
     ;;
   *)
     echo
-    echo "Add ai-ink to your PATH:"
+    echo "Add exceeds-ink to your PATH:"
     echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
     ;;
 esac
 
 echo
 echo "Next steps:"
-echo "  1. Run 'ai-ink --version' to confirm the install."
+echo "  1. Run 'exceeds-ink --version' to confirm the install."
 if [ "$BINARY_ONLY" = "1" ]; then
-  echo "  2. Run 'ai-ink setup' / 'ai-ink install' as needed, or re-run this installer without --binary-only."
-  echo "  3. Run 'ai-ink init' inside each repo you want to track."
+  echo "  2. Run 'exceeds-ink setup' / 'exceeds-ink install' as needed, or re-run this installer without --binary-only."
+  echo "  3. Run 'exceeds-ink init' inside each repo you want to track."
 else
-  echo "  2. Run 'ai-ink init' inside each repo you want to track."
+  echo "  2. Run 'exceeds-ink init' inside each repo you want to track."
 fi

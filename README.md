@@ -1,6 +1,6 @@
 # exceeds-ink-downloads
 
-Public installers and release assets for `ai-ink`.
+Public installers and release assets for `exceeds-ink`.
 
 This repository is a distribution mirror. The private source of truth lives in the main `exceeds-ink` repository; tagged releases there publish:
 
@@ -15,7 +15,7 @@ Install commands:
 curl -fsSL https://raw.githubusercontent.com/Exceeds-AI/exceeds-ink-downloads/main/install.sh | sh
 ```
 
-By default this installs the binary, runs `ai-ink setup` and `ai-ink install --all` against the public Exceeds Vercel collector. Afterward run `ai-ink init` in each git repository you want to track. Use `--binary-only` or `AI_INK_BINARY_ONLY=1` to install only the binary.
+By default this installs the binary, runs `exceeds-ink setup` and `exceeds-ink install --all` against the public Exceeds Vercel collector. Afterward run `exceeds-ink init` in each git repository you want to track. Use `--binary-only` or `EXCEEDS_INK_BINARY_ONLY=1` to install only the binary.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/Exceeds-AI/exceeds-ink-downloads/main/install.ps1 | iex"
