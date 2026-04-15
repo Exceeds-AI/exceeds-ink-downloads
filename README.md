@@ -15,6 +15,8 @@ Install commands:
 curl -fsSL https://raw.githubusercontent.com/Exceeds-AI/exceeds-ink-downloads/main/install.sh | sh
 ```
 
+By default this installs the binary, runs `ai-ink setup` and `ai-ink install --all` against the public Exceeds Vercel collector. Afterward run `ai-ink init` in each git repository you want to track. Use `--binary-only` or `AI_INK_BINARY_ONLY=1` to install only the binary.
+
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/Exceeds-AI/exceeds-ink-downloads/main/install.ps1 | iex"
 ```
@@ -22,5 +24,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/Exc
 Version pinning:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Exceeds-AI/exceeds-ink-downloads/main/install.sh | env AI_INK_VERSION=0.1.1 sh
+curl -fsSL https://raw.githubusercontent.com/Exceeds-AI/exceeds-ink-downloads/v0.1.1/install.sh | sh
 ```
+
+Fetch the installer from the matching tag when pinning a version so the installer behavior stays aligned with the binary release you want for yourself.

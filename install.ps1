@@ -3,7 +3,7 @@ param(
     [string]$Repo = $(if ($env:AI_INK_REPO) { $env:AI_INK_REPO } else { "Exceeds-AI/exceeds-ink-downloads" }),
     [string]$DownloadBase = $env:AI_INK_DOWNLOAD_BASE_URL,
     [string]$InstallDir = $(if ($env:AI_INK_INSTALL_DIR) { $env:AI_INK_INSTALL_DIR } else { (Join-Path $HOME ".ai-ink\bin") }),
-    [switch]$InstallIntegrations,
+    [switch]$BinaryOnly,
     [string]$CompatEndpoint = $env:AI_INK_COMPAT_ENDPOINT,
     [string]$OtlpHttpEndpoint = $env:AI_INK_OTLP_HTTP_ENDPOINT,
     [string]$OtlpGrpcEndpoint = $env:AI_INK_OTLP_GRPC_ENDPOINT,
@@ -12,6 +12,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$DefaultOtlpHttp = "https://exceeds-ink.vercel.app/api/v1/otlp"
+$DefaultCompat = "https://exceeds-ink.vercel.app/api/v1/ingest"
 
 if (-not $IsWindows) {
     throw "install.ps1 is intended for Windows. Use install.sh on macOS or Linux."
@@ -72,6 +75,27 @@ function Test-EnvFlag {
     }
 }
 
+function Resolve-EffectiveEndpoints {
+    param(
+        [string]$Otlp,
+        [string]$Compat,
+        [string]$DefaultOtlp,
+        [string]$DefaultCompat
+    )
+
+    $hasOtlp = -not [string]::IsNullOrWhiteSpace($Otlp)
+    $hasCompat = -not [string]::IsNullOrWhiteSpace($Compat)
+    if ($hasOtlp -and $hasCompat) {
+        return @{ Otlp = $Otlp.Trim(); Compat = $Compat.Trim() }
+    }
+    if (-not $hasOtlp -and -not $hasCompat) {
+        return @{ Otlp = $DefaultOtlp; Compat = $DefaultCompat }
+    }
+    throw "Set both AI_INK_OTLP_HTTP_ENDPOINT and AI_INK_COMPAT_ENDPOINT to override the collector, or set neither to use the default Exceeds Vercel URLs."
+}
+
+$binaryOnlyRequested = $BinaryOnly.IsPresent -or (Test-EnvFlag -Value $env:AI_INK_BINARY_ONLY)
+
 $resolvedVersion = Resolve-Version -RequestedVersion $Version -Repository $Repo -AssetBase $DownloadBase
 $target = Get-Target
 $asset = "ai-ink_${resolvedVersion}_${target}.zip"
@@ -109,15 +133,28 @@ try {
     Copy-Item -Force (Join-Path $tmpDir "ai-ink.exe") $binaryPath
     Write-Host "Installed ai-ink to $binaryPath"
 
-    $installRequested = $InstallIntegrations.IsPresent -or (Test-EnvFlag -Value $env:AI_INK_INSTALL_INTEGRATIONS)
-    if ($installRequested) {
-        $installArgs = @("install", "--all")
-        if ($CompatEndpoint) {
-            $installArgs += @("--compat-endpoint", $CompatEndpoint)
+    if (-not $binaryOnlyRequested) {
+        $eff = Resolve-EffectiveEndpoints -Otlp $OtlpHttpEndpoint -Compat $CompatEndpoint -DefaultOtlp $DefaultOtlpHttp -DefaultCompat $DefaultCompat
+        Write-Host "Running ai-ink setup (collector: Exceeds Vercel or your overrides)..."
+        $setupArgs = @(
+            "setup",
+            "--otlp-http-endpoint", $eff.Otlp,
+            "--compat-endpoint", $eff.Compat
+        )
+        if ($OtlpGrpcEndpoint) {
+            $setupArgs += @("--otlp-grpc-endpoint", $OtlpGrpcEndpoint)
         }
-        if ($OtlpHttpEndpoint) {
-            $installArgs += @("--otlp-http-endpoint", $OtlpHttpEndpoint)
+        if ($ApiKey) {
+            $setupArgs += @("--api-key", $ApiKey)
         }
+        & $binaryPath @setupArgs
+
+        Write-Host "Running ai-ink install --all..."
+        $installArgs = @(
+            "install", "--all",
+            "--otlp-http-endpoint", $eff.Otlp,
+            "--compat-endpoint", $eff.Compat
+        )
         if ($OtlpGrpcEndpoint) {
             $installArgs += @("--otlp-grpc-endpoint", $OtlpGrpcEndpoint)
         }
@@ -137,10 +174,15 @@ try {
     Write-Host ""
     Write-Host "Next steps:"
     Write-Host "  1. Run 'ai-ink --version' in a new shell to confirm the install."
-    Write-Host "  2. Run 'ai-ink init' inside each repo you want to track."
-    Write-Host "  3. On Windows, repo hooks require Git Bash (`bash`) on PATH."
+    if ($binaryOnlyRequested) {
+        Write-Host "  2. Run 'ai-ink setup' / 'ai-ink install' as needed, or re-run this installer without -BinaryOnly."
+        Write-Host "  3. Run 'ai-ink init' inside each repo you want to track."
+    } else {
+        Write-Host "  2. Run 'ai-ink init' inside each repo you want to track."
+    }
+    Write-Host "  On Windows, repo hooks require Git Bash (`bash`) on PATH."
     if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq "Arm64") {
-        Write-Host "  4. Windows ARM currently installs the x64 binary."
+        Write-Host "  Windows ARM currently installs the x64 binary."
     }
 }
 finally {

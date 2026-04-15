@@ -1,32 +1,37 @@
 #!/bin/sh
 set -eu
 
+# Public Exceeds collector (Vercel). Override both OTLP + compat together if you use a different host.
+DEFAULT_OTLP_HTTP="https://exceeds-ink.vercel.app/api/v1/otlp"
+DEFAULT_COMPAT="https://exceeds-ink.vercel.app/api/v1/ingest"
+
 REPO="${AI_INK_REPO:-Exceeds-AI/exceeds-ink-downloads}"
 INSTALL_DIR="${AI_INK_INSTALL_DIR:-$HOME/.ai-ink/bin}"
 VERSION="${AI_INK_VERSION:-latest}"
-# Optional public asset base URL, e.g. https://downloads.example.com/ai-ink.
-# Assets are expected under ${AI_INK_DOWNLOAD_BASE_URL}/v${VERSION}/.
 DOWNLOAD_BASE="${AI_INK_DOWNLOAD_BASE_URL:-}"
-INSTALL_INTEGRATIONS="${AI_INK_INSTALL_INTEGRATIONS:-0}"
 COMPAT_ENDPOINT="${AI_INK_COMPAT_ENDPOINT:-}"
 OTLP_HTTP_ENDPOINT="${AI_INK_OTLP_HTTP_ENDPOINT:-}"
 OTLP_GRPC_ENDPOINT="${AI_INK_OTLP_GRPC_ENDPOINT:-}"
 API_KEY="${AI_INK_API_KEY:-}"
+BINARY_ONLY=0
 
 usage() {
   cat <<'EOF'
 Usage: curl -fsSL https://raw.githubusercontent.com/Exceeds-AI/exceeds-ink-downloads/main/install.sh | sh
+
+By default this installs the binary, runs `ai-ink setup`, then `ai-ink install --all` against the
+public Exceeds Vercel collector. Afterward run `ai-ink init` in each git repo you want to track.
 
 Optional flags:
   --version <version>             Install a specific version (for example: 0.1.0)
   --install-dir <path>            Override the binary install directory
   --download-base <url>           Override the public asset base URL
   --repo <owner/name>             Override the GitHub repository used for releases
-  --install-integrations          Run `ai-ink install --all` after installing the binary
-  --compat-endpoint <url>         Pass through to `ai-ink install --all`
-  --otlp-http-endpoint <url>      Pass through to `ai-ink install --all`
-  --otlp-grpc-endpoint <url>      Pass through to `ai-ink install --all`
-  --api-key <key>                 Pass through to `ai-ink install --all`
+  --binary-only                   Only download and install the binary (skip setup / install --all)
+  --compat-endpoint <url>         Override compat ingest (requires --otlp-http-endpoint too)
+  --otlp-http-endpoint <url>      Override OTLP HTTP (requires --compat-endpoint too)
+  --otlp-grpc-endpoint <url>      Optional; passed through when set
+  --api-key <key>                 Optional; passed to setup and install when set
 EOF
 }
 
@@ -48,8 +53,8 @@ while [ "$#" -gt 0 ]; do
       REPO="$2"
       shift 2
       ;;
-    --install-integrations)
-      INSTALL_INTEGRATIONS=1
+    --binary-only)
+      BINARY_ONLY=1
       shift 1
       ;;
     --compat-endpoint)
@@ -79,6 +84,10 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+case "$(printf '%s' "${AI_INK_BINARY_ONLY:-}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on) BINARY_ONLY=1 ;;
+esac
 
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -163,6 +172,50 @@ verify_checksum() {
   fi
 }
 
+resolve_effective_endpoints() {
+  if [ -n "$OTLP_HTTP_ENDPOINT" ] && [ -n "$COMPAT_ENDPOINT" ]; then
+    EFF_OTLP_HTTP="$OTLP_HTTP_ENDPOINT"
+    EFF_COMPAT="$COMPAT_ENDPOINT"
+    return
+  fi
+  if [ -z "$OTLP_HTTP_ENDPOINT" ] && [ -z "$COMPAT_ENDPOINT" ]; then
+    EFF_OTLP_HTTP="$DEFAULT_OTLP_HTTP"
+    EFF_COMPAT="$DEFAULT_COMPAT"
+    return
+  fi
+  echo "Set both AI_INK_OTLP_HTTP_ENDPOINT and AI_INK_COMPAT_ENDPOINT to override the collector, or set neither to use the default Exceeds Vercel URLs." >&2
+  exit 1
+}
+
+run_setup_and_install() {
+  install_path="$1"
+  resolve_effective_endpoints
+
+  echo "Running ai-ink setup (collector: Exceeds Vercel or your overrides)..."
+  set -- "$install_path" setup \
+    --otlp-http-endpoint "$EFF_OTLP_HTTP" \
+    --compat-endpoint "$EFF_COMPAT"
+  if [ -n "$OTLP_GRPC_ENDPOINT" ]; then
+    set -- "$@" --otlp-grpc-endpoint "$OTLP_GRPC_ENDPOINT"
+  fi
+  if [ -n "$API_KEY" ]; then
+    set -- "$@" --api-key "$API_KEY"
+  fi
+  "$@"
+
+  echo "Running ai-ink install --all..."
+  set -- "$install_path" install --all \
+    --otlp-http-endpoint "$EFF_OTLP_HTTP" \
+    --compat-endpoint "$EFF_COMPAT"
+  if [ -n "$OTLP_GRPC_ENDPOINT" ]; then
+    set -- "$@" --otlp-grpc-endpoint "$OTLP_GRPC_ENDPOINT"
+  fi
+  if [ -n "$API_KEY" ]; then
+    set -- "$@" --api-key "$API_KEY"
+  fi
+  "$@"
+}
+
 need_cmd curl
 need_cmd tar
 need_cmd mktemp
@@ -203,21 +256,8 @@ chmod 755 "$install_path"
 
 echo "Installed ai-ink to $install_path"
 
-if [ "$INSTALL_INTEGRATIONS" = "1" ]; then
-  set -- install --all
-  if [ -n "$COMPAT_ENDPOINT" ]; then
-    set -- "$@" --compat-endpoint "$COMPAT_ENDPOINT"
-  fi
-  if [ -n "$OTLP_HTTP_ENDPOINT" ]; then
-    set -- "$@" --otlp-http-endpoint "$OTLP_HTTP_ENDPOINT"
-  fi
-  if [ -n "$OTLP_GRPC_ENDPOINT" ]; then
-    set -- "$@" --otlp-grpc-endpoint "$OTLP_GRPC_ENDPOINT"
-  fi
-  if [ -n "$API_KEY" ]; then
-    set -- "$@" --api-key "$API_KEY"
-  fi
-  "$install_path" "$@"
+if [ "$BINARY_ONLY" != "1" ]; then
+  run_setup_and_install "$install_path"
 fi
 
 case ":$PATH:" in
@@ -233,4 +273,9 @@ esac
 echo
 echo "Next steps:"
 echo "  1. Run 'ai-ink --version' to confirm the install."
-echo "  2. Run 'ai-ink init' inside each repo you want to track."
+if [ "$BINARY_ONLY" = "1" ]; then
+  echo "  2. Run 'ai-ink setup' / 'ai-ink install' as needed, or re-run this installer without --binary-only."
+  echo "  3. Run 'ai-ink init' inside each repo you want to track."
+else
+  echo "  2. Run 'ai-ink init' inside each repo you want to track."
+fi
