@@ -13,14 +13,17 @@ COMPAT_ENDPOINT="${EXCEEDS_INK_COMPAT_ENDPOINT:-}"
 OTLP_HTTP_ENDPOINT="${EXCEEDS_INK_OTLP_HTTP_ENDPOINT:-}"
 OTLP_GRPC_ENDPOINT="${EXCEEDS_INK_OTLP_GRPC_ENDPOINT:-}"
 API_KEY="${EXCEEDS_INK_API_KEY:-}"
+INSTALLER_REGISTRATION_TIMEOUT_SECONDS="${EXCEEDS_INK_INSTALLER_REGISTRATION_TIMEOUT_SECONDS:-600}"
+INSTALLER_REGISTRATION_POLL_SECONDS="${EXCEEDS_INK_INSTALLER_REGISTRATION_POLL_SECONDS:-5}"
 BINARY_ONLY=0
 
 usage() {
   cat <<'EOF'
 Usage: curl -fsSL https://raw.githubusercontent.com/Exceeds-AI/exceeds-ink-downloads/main/install.sh | sh
 
-By default this installs the binary, runs `exceeds-ink setup`, then `exceeds-ink install --all` against the
-public Exceeds Vercel collector. Afterward run `exceeds-ink init` in each git repo you want to track.
+By default this installs the binary, runs `exceeds-ink setup`, completes machine registration, then
+`exceeds-ink install --all` against the public Exceeds Vercel collector. Afterward run `exceeds-ink init`
+in each git repo you want to track.
 
 Optional flags:
   --version <version>             Install a specific version (for example: 0.1.0)
@@ -187,6 +190,87 @@ resolve_effective_endpoints() {
   exit 1
 }
 
+kv_value() {
+  key="$1"
+  content="$2"
+  printf '%s\n' "$content" | awk -F= -v target="$key" '
+    $1 == target {
+      print substr($0, index($0, "=") + 1)
+      exit
+    }
+  '
+}
+
+run_machine_registration() {
+  install_path="$1"
+  status_output="$("$install_path" machine status 2>&1)" || {
+    printf '%s\n' "$status_output" >&2
+    exit 1
+  }
+  registered="$(kv_value machine_registered "$status_output")"
+  if [ "$registered" = "yes" ]; then
+    echo "Machine already registered."
+    return
+  fi
+
+  echo "Running exceeds-ink machine pair..."
+  pair_output="$("$install_path" machine pair 2>&1)" || {
+    printf '%s\n' "$pair_output" >&2
+    exit 1
+  }
+  printf '%s\n' "$pair_output"
+
+  pairing_id="$(kv_value machine_pairing_id "$pair_output")"
+  if [ -z "$pairing_id" ]; then
+    echo "Machine pairing did not return a pairing id." >&2
+    exit 1
+  fi
+
+  deadline_epoch=$(( $(date +%s) + INSTALLER_REGISTRATION_TIMEOUT_SECONDS ))
+  last_status=""
+  while :; do
+    status_output="$("$install_path" machine status 2>&1)" || {
+      printf '%s\n' "$status_output" >&2
+      exit 1
+    }
+    registered="$(kv_value machine_registered "$status_output")"
+    pairing_status="$(kv_value pairing_status "$status_output")"
+    remote_pairing_status="$(kv_value remote_pairing_status "$status_output")"
+    if [ "$registered" = "yes" ]; then
+      echo "Machine registration complete."
+      printf '%s\n' "$status_output"
+      return
+    fi
+
+    effective_status="$remote_pairing_status"
+    if [ -z "$effective_status" ]; then
+      effective_status="$pairing_status"
+    fi
+    if [ -z "$effective_status" ]; then
+      effective_status="pending"
+    fi
+
+    case "$effective_status" in
+      rejected|expired)
+        echo "Machine registration failed with status: $effective_status" >&2
+        printf '%s\n' "$status_output" >&2
+        exit 1
+        ;;
+    esac
+
+    if [ "$effective_status" != "$last_status" ]; then
+      echo "Waiting for machine approval (pairing $pairing_id, status: $effective_status)..."
+      last_status="$effective_status"
+    fi
+    if [ "$(date +%s)" -ge "$deadline_epoch" ]; then
+      echo "Timed out waiting for machine registration approval." >&2
+      printf '%s\n' "$status_output" >&2
+      exit 1
+    fi
+    sleep "$INSTALLER_REGISTRATION_POLL_SECONDS"
+  done
+}
+
 run_setup_and_install() {
   install_path="$1"
   resolve_effective_endpoints
@@ -201,7 +285,9 @@ run_setup_and_install() {
   if [ -n "$API_KEY" ]; then
     set -- "$@" --api-key "$API_KEY"
   fi
-  "$@"
+  EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 "$@"
+
+  run_machine_registration "$install_path"
 
   echo "Running exceeds-ink install --all..."
   set -- "$install_path" install --all \
@@ -213,7 +299,7 @@ run_setup_and_install() {
   if [ -n "$API_KEY" ]; then
     set -- "$@" --api-key "$API_KEY"
   fi
-  "$@"
+  EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 "$@"
 }
 
 need_cmd curl
