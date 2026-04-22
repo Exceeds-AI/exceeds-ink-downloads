@@ -302,6 +302,92 @@ run_setup_and_install() {
   EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 "$@"
 }
 
+shell_family() {
+  shell_path="${1:-${SHELL:-}}"
+  shell_name="${shell_path##*/}"
+  case "$shell_name" in
+    sh|ash|bash|dash|ksh|zsh)
+      printf '%s' "posix"
+      ;;
+    fish)
+      printf '%s' "fish"
+      ;;
+    *)
+      printf '%s' "unknown"
+      ;;
+  esac
+}
+
+path_contains_dir() {
+  target_dir="$1"
+  case ":$PATH:" in
+    *":$target_dir:"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+print_path_guidance() {
+  install_dir="$1"
+  case "$(shell_family "${2:-${SHELL:-}}")" in
+    fish)
+      echo "Add exceeds-ink to your PATH (fish):"
+      echo "  fish_add_path \"$install_dir\""
+      ;;
+    posix)
+      echo "Add exceeds-ink to your PATH:"
+      echo "  export PATH=\"$install_dir:\$PATH\""
+      ;;
+    *)
+      echo "Add exceeds-ink to your PATH:"
+      echo "  Your shell was not recognized automatically."
+      echo "  Add $install_dir to your PATH using your shell's startup file."
+      ;;
+  esac
+}
+
+print_post_install_summary() {
+  install_dir="$1"
+  install_path="$2"
+  binary_only="$3"
+
+  path_ready=0
+  if path_contains_dir "$install_dir"; then
+    path_ready=1
+  else
+    echo
+    print_path_guidance "$install_dir"
+    echo "  Open a new shell or reload your shell config afterward."
+  fi
+
+  echo
+  echo "Next steps:"
+  if [ "$path_ready" = "1" ]; then
+    echo "  1. Run 'exceeds-ink --version' to confirm the install."
+  else
+    echo "  1. Run '$install_path --version' to confirm the install immediately."
+    echo "  2. After updating your PATH, open a new shell and run 'exceeds-ink --version'."
+  fi
+  if [ "$binary_only" = "1" ]; then
+    if [ "$path_ready" = "1" ]; then
+      echo "  2. Run 'exceeds-ink setup' / 'exceeds-ink install' as needed, or re-run this installer without --binary-only."
+      echo "  3. Run 'exceeds-ink init' inside each repo you want to track."
+    else
+      echo "  3. Run 'exceeds-ink setup' / 'exceeds-ink install' as needed, or re-run this installer without --binary-only."
+      echo "  4. Run 'exceeds-ink init' inside each repo you want to track."
+    fi
+  else
+    if [ "$path_ready" = "1" ]; then
+      echo "  2. Run 'exceeds-ink init' inside each repo you want to track."
+    else
+      echo "  3. Run 'exceeds-ink init' inside each repo you want to track."
+    fi
+  fi
+}
+
+if [ "${EXCEEDS_INK_INSTALLER_SOURCE_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 need_cmd curl
 need_cmd tar
 need_cmd mktemp
@@ -346,22 +432,4 @@ if [ "$BINARY_ONLY" != "1" ]; then
   run_setup_and_install "$install_path"
 fi
 
-case ":$PATH:" in
-  *":$INSTALL_DIR:"*)
-    ;;
-  *)
-    echo
-    echo "Add exceeds-ink to your PATH:"
-    echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
-    ;;
-esac
-
-echo
-echo "Next steps:"
-echo "  1. Run 'exceeds-ink --version' to confirm the install."
-if [ "$BINARY_ONLY" = "1" ]; then
-  echo "  2. Run 'exceeds-ink setup' / 'exceeds-ink install' as needed, or re-run this installer without --binary-only."
-  echo "  3. Run 'exceeds-ink init' inside each repo you want to track."
-else
-  echo "  2. Run 'exceeds-ink init' inside each repo you want to track."
-fi
+print_post_install_summary "$INSTALL_DIR" "$install_path" "$BINARY_ONLY"
