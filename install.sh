@@ -21,9 +21,10 @@ usage() {
   cat <<'EOF'
 Usage: curl -fsSL https://raw.githubusercontent.com/Exceeds-AI/exceeds-ink-downloads/main/install.sh | sh
 
-By default this installs the binary, runs `exceeds-ink setup`, completes machine registration, then
-`exceeds-ink install --all` against the public Exceeds Vercel collector. Afterward run `exceeds-ink init`
-in each git repo you want to track.
+By default this installs the binary, clears any existing local machine registration state, runs
+`exceeds-ink setup`, completes machine registration, then `exceeds-ink install --all` against the
+public Exceeds Vercel collector. Rerunning the installer intentionally re-pairs the machine.
+Afterward run `exceeds-ink init` in each git repo you want to track.
 
 Optional flags:
   --version <version>             Install a specific version (for example: 0.1.0)
@@ -274,6 +275,13 @@ run_machine_registration() {
 run_setup_and_install() {
   install_path="$1"
   resolve_effective_endpoints
+
+  echo "Clearing local machine registration state before reinstall..."
+  clear_output="$("$install_path" machine clear 2>&1)" || {
+    printf '%s\n' "$clear_output" >&2
+    exit 1
+  }
+  printf '%s\n' "$clear_output"
 
   echo "Running exceeds-ink setup (collector: Exceeds Vercel or your overrides)..."
   set -- "$install_path" setup \
