@@ -4,6 +4,8 @@ set -eu
 # Public Exceeds collector (Vercel). Override both OTLP + compat together if you use a different host.
 DEFAULT_OTLP_HTTP="https://exceeds-ink.vercel.app/api/v1/otlp"
 DEFAULT_COMPAT="https://exceeds-ink.vercel.app/api/v1/ingest"
+RELEASE_MANIFEST_NAME="release-manifest.json"
+RELEASE_MANIFEST_SIG_NAME="release-manifest.rsa.sig"
 
 REPO="${EXCEEDS_INK_REPO:-Exceeds-AI/exceeds-ink-downloads}"
 INSTALL_DIR="${EXCEEDS_INK_INSTALL_DIR:-$HOME/.exceeds-ink/bin}"
@@ -15,7 +17,26 @@ OTLP_GRPC_ENDPOINT="${EXCEEDS_INK_OTLP_GRPC_ENDPOINT:-}"
 API_KEY="${EXCEEDS_INK_API_KEY:-}"
 INSTALLER_REGISTRATION_TIMEOUT_SECONDS="${EXCEEDS_INK_INSTALLER_REGISTRATION_TIMEOUT_SECONDS:-600}"
 INSTALLER_REGISTRATION_POLL_SECONDS="${EXCEEDS_INK_INSTALLER_REGISTRATION_POLL_SECONDS:-5}"
+ENDPOINT_TRUST_FLAG=""
 BINARY_ONLY=0
+
+release_public_key_pem() {
+  if [ -n "${EXCEEDS_INK_RELEASE_PUBLIC_KEY_PEM:-}" ]; then
+    printf '%s\n' "$EXCEEDS_INK_RELEASE_PUBLIC_KEY_PEM"
+    return
+  fi
+  cat <<'EOF'
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyGnvGBRo2vHxXzjVJ0Mk
+UChaRru59NUnTMBldQBPg/OGlvvIZ0fJQ7UlBfznZOtZzdif3EkFg0ihvYIKqTiL
+trMXY5XD7rcxLB6VvCQ+deHayPbsCPs141GWCYxDhdDeV3hG4jHDaHac0AbvRWZI
+VaroBzjg4m+2soghn+AfwKAebqwkSH//OpyPLzyuxMzkyqurt6Ii8714tGGzQjsr
+U+5gl+3jwai45JWjHtLibKW+XyAjtVVaJJRyqHdZs6rYBaacUrOc4tPNxCOwCIGe
+rC0WyChAAs99VY/RHjl5ope2c8t1921cSNC9092YUyylq9K8LECD58KsLRjISuOz
+UQIDAQAB
+-----END PUBLIC KEY-----
+EOF
+}
 
 usage() {
   cat <<'EOF'
@@ -36,7 +57,19 @@ Optional flags:
   --otlp-http-endpoint <url>      Override OTLP HTTP (requires --compat-endpoint too)
   --otlp-grpc-endpoint <url>      Optional; passed through when set
   --api-key <key>                 Optional; passed to setup and install when set
+  --official-endpoint             Explicitly use the built-in public Exceeds endpoint
+  --dev-endpoint                  Allow localhost/dev endpoint overrides
+  --allow-custom-endpoint         Allow arbitrary custom endpoint overrides
 EOF
+}
+
+set_endpoint_trust_flag() {
+  flag="$1"
+  if [ -n "$ENDPOINT_TRUST_FLAG" ] && [ "$ENDPOINT_TRUST_FLAG" != "$flag" ]; then
+    echo "Choose at most one of --official-endpoint, --dev-endpoint, or --allow-custom-endpoint." >&2
+    exit 1
+  fi
+  ENDPOINT_TRUST_FLAG="$flag"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -76,6 +109,18 @@ while [ "$#" -gt 0 ]; do
     --api-key)
       API_KEY="$2"
       shift 2
+      ;;
+    --official-endpoint)
+      set_endpoint_trust_flag "--official-endpoint"
+      shift 1
+      ;;
+    --dev-endpoint)
+      set_endpoint_trust_flag "--dev-endpoint"
+      shift 1
+      ;;
+    --allow-custom-endpoint)
+      set_endpoint_trust_flag "--allow-custom-endpoint"
+      shift 1
       ;;
     -h|--help)
       usage
@@ -154,15 +199,75 @@ detect_target() {
   printf '%s-%s' "$arch_part" "$os_part"
 }
 
-verify_checksum() {
-  file="$1"
-  checksum_file="$2"
+manifest_asset_sha256() {
+  manifest_file="$1"
+  asset_name="$2"
+  version="$3"
 
-  expected="$(awk '{print $1}' "$checksum_file")"
-  if [ -z "$expected" ]; then
-    echo "Checksum file is empty: $checksum_file" >&2
+  tr -d '\r\n\t ' < "$manifest_file" | awk -v asset="$asset_name" -v version="$version" '
+    {
+      version_needle = "\"version\":\"" version "\""
+      if (index($0, version_needle) == 0) {
+        print "release is not trusted: manifest version mismatch" > "/dev/stderr"
+        exit 2
+      }
+      asset_needle = "\"name\":\"" asset "\""
+      start = index($0, asset_needle)
+      if (start == 0) {
+        print "release is not trusted: manifest missing asset " asset > "/dev/stderr"
+        exit 3
+      }
+      rest = substr($0, start)
+      split(rest, parts, "\"sha256\":\"")
+      if (length(parts) < 2) {
+        print "release is not trusted: manifest asset missing sha256" > "/dev/stderr"
+        exit 4
+      }
+      hash = substr(parts[2], 1, 64)
+      if (length(hash) != 64 || hash !~ /^[0-9A-Fa-f]+$/) {
+        print "release is not trusted: manifest asset sha256 is invalid" > "/dev/stderr"
+        exit 5
+      }
+      print tolower(hash)
+      exit 0
+    }
+  '
+}
+
+verify_signed_manifest() {
+  manifest_file="$1"
+  signature_file="$2"
+  asset_name="$3"
+  version="$4"
+
+  need_cmd openssl
+  if [ ! -f "$manifest_file" ] || [ ! -f "$signature_file" ]; then
+    echo "release is not trusted: signed release manifest or signature is missing. For local release testing, publish release-manifest.json and release-manifest.rsa.sig and set EXCEEDS_INK_RELEASE_PUBLIC_KEY_PEM to the PEM public key that signed it." >&2
     exit 1
   fi
+
+  key_file="$(mktemp "${TMPDIR:-/tmp}/exceeds-ink-release-key.XXXXXX")"
+  sig_file="$(mktemp "${TMPDIR:-/tmp}/exceeds-ink-release-sig.XXXXXX")"
+  release_public_key_pem > "$key_file"
+  if ! tr -d '\r\n\t ' < "$signature_file" | openssl base64 -d -A -out "$sig_file" >/dev/null 2>&1; then
+    rm -f "$key_file" "$sig_file"
+    echo "release is not trusted: release manifest signature is not valid base64." >&2
+    echo "For local release testing, set EXCEEDS_INK_RELEASE_PUBLIC_KEY_PEM to the PEM public key that signed the manifest." >&2
+    exit 1
+  fi
+  if ! openssl dgst -sha256 -verify "$key_file" -signature "$sig_file" "$manifest_file" >/dev/null 2>&1; then
+    rm -f "$key_file" "$sig_file"
+    echo "release is not trusted: RSA-SHA256 release manifest signature verification failed." >&2
+    echo "For local release testing, set EXCEEDS_INK_RELEASE_PUBLIC_KEY_PEM to the PEM public key that signed the manifest." >&2
+    exit 1
+  fi
+  rm -f "$key_file" "$sig_file"
+  manifest_asset_sha256 "$manifest_file" "$asset_name" "$version" || exit 1
+}
+
+verify_archive_sha256() {
+  file="$1"
+  expected="$2"
 
   if command -v sha256sum >/dev/null 2>&1; then
     actual="$(sha256sum "$file" | awk '{print $1}')"
@@ -171,9 +276,45 @@ verify_checksum() {
   fi
 
   if [ "$expected" != "$actual" ]; then
-    echo "Checksum verification failed for $file" >&2
+    echo "SHA256 verification failed for $file" >&2
     exit 1
   fi
+}
+
+endpoint_override_flag() {
+  endpoint="$1"
+  case "$endpoint" in
+    https://exceeds-ink.vercel.app/api/v1/ingest)
+      printf '%s' "--official-endpoint"
+      ;;
+    http://127.0.0.1:*|http://localhost:*|https://127.0.0.1:*|https://localhost:*)
+      printf '%s' "--dev-endpoint"
+      ;;
+    https://*)
+      printf '%s' "--allow-custom-endpoint"
+      ;;
+    http://*)
+      printf '%s' "--allow-custom-endpoint"
+      ;;
+    *)
+      echo "Unsupported endpoint override: $endpoint" >&2
+      exit 1
+      ;;
+  esac
+}
+
+resolve_endpoint_trust_flag() {
+  expected_flag="$(endpoint_override_flag "$EFF_COMPAT")"
+  if [ -n "$ENDPOINT_TRUST_FLAG" ]; then
+    printf '%s' "$ENDPOINT_TRUST_FLAG"
+    return
+  fi
+  if [ "$expected_flag" = "--official-endpoint" ] && [ "$EFF_OTLP_HTTP" = "$DEFAULT_OTLP_HTTP" ]; then
+    printf '%s' "--official-endpoint"
+    return
+  fi
+  echo "Non-official endpoint overrides require explicit trust intent. Re-run with --dev-endpoint for localhost/dev endpoints or --allow-custom-endpoint for custom endpoints." >&2
+  exit 1
 }
 
 resolve_effective_endpoints() {
@@ -275,6 +416,7 @@ run_machine_registration() {
 run_setup_and_install() {
   install_path="$1"
   resolve_effective_endpoints
+  ENDPOINT_FLAG="$(resolve_endpoint_trust_flag)" || exit 1
 
   echo "Clearing local machine registration state before reinstall..."
   clear_output="$("$install_path" machine clear 2>&1)" || {
@@ -285,6 +427,7 @@ run_setup_and_install() {
 
   echo "Running exceeds-ink setup (collector: Exceeds Vercel or your overrides)..."
   set -- "$install_path" setup \
+    "$ENDPOINT_FLAG" \
     --otlp-http-endpoint "$EFF_OTLP_HTTP" \
     --compat-endpoint "$EFF_COMPAT"
   if [ -n "$OTLP_GRPC_ENDPOINT" ]; then
@@ -293,12 +436,13 @@ run_setup_and_install() {
   if [ -n "$API_KEY" ]; then
     set -- "$@" --api-key "$API_KEY"
   fi
-  EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 "$@"
+  EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 "$@" || exit 1
 
   run_machine_registration "$install_path"
 
   echo "Running exceeds-ink install --all..."
   set -- "$install_path" install --all \
+    "$ENDPOINT_FLAG" \
     --otlp-http-endpoint "$EFF_OTLP_HTTP" \
     --compat-endpoint "$EFF_COMPAT"
   if [ -n "$OTLP_GRPC_ENDPOINT" ]; then
@@ -307,7 +451,7 @@ run_setup_and_install() {
   if [ -n "$API_KEY" ]; then
     set -- "$@" --api-key "$API_KEY"
   fi
-  EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 "$@"
+  EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 "$@" || exit 1
 }
 
 shell_family() {
@@ -400,6 +544,7 @@ need_cmd curl
 need_cmd tar
 need_cmd mktemp
 need_cmd awk
+need_cmd openssl
 
 TARGET="$(detect_target)"
 RESOLVED_VERSION="$(resolve_version)"
@@ -417,7 +562,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 ARCHIVE_PATH="$TMP_DIR/$ASSET"
-CHECKSUM_PATH="$TMP_DIR/$ASSET.sha256"
+MANIFEST_PATH="$TMP_DIR/$RELEASE_MANIFEST_NAME"
+SIGNATURE_PATH="$TMP_DIR/$RELEASE_MANIFEST_SIG_NAME"
 
 if [ -n "$DOWNLOAD_BASE" ]; then
   echo "Downloading ${ASSET} from ${BASE_URL}..."
@@ -425,8 +571,10 @@ else
   echo "Downloading ${ASSET} from ${REPO}..."
 fi
 curl -fsSL "$BASE_URL/$ASSET" -o "$ARCHIVE_PATH"
-curl -fsSL "$BASE_URL/$ASSET.sha256" -o "$CHECKSUM_PATH"
-verify_checksum "$ARCHIVE_PATH" "$CHECKSUM_PATH"
+curl -fsSL "$BASE_URL/$RELEASE_MANIFEST_NAME" -o "$MANIFEST_PATH"
+curl -fsSL "$BASE_URL/$RELEASE_MANIFEST_SIG_NAME" -o "$SIGNATURE_PATH"
+EXPECTED_SHA256="$(verify_signed_manifest "$MANIFEST_PATH" "$SIGNATURE_PATH" "$ASSET" "$RESOLVED_VERSION")" || exit 1
+verify_archive_sha256 "$ARCHIVE_PATH" "$EXPECTED_SHA256"
 
 mkdir -p "$INSTALL_DIR"
 tar -xzf "$ARCHIVE_PATH" -C "$TMP_DIR"

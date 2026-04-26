@@ -15,6 +15,19 @@ $ErrorActionPreference = "Stop"
 
 $DefaultOtlpHttp = "https://exceeds-ink.vercel.app/api/v1/otlp"
 $DefaultCompat = "https://exceeds-ink.vercel.app/api/v1/ingest"
+$ReleaseManifestName = "release-manifest.json"
+$ReleaseManifestSignatureName = "release-manifest.rsa.sig"
+$ProductionReleasePublicKeyPem = @'
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyGnvGBRo2vHxXzjVJ0Mk
+UChaRru59NUnTMBldQBPg/OGlvvIZ0fJQ7UlBfznZOtZzdif3EkFg0ihvYIKqTiL
+trMXY5XD7rcxLB6VvCQ+deHayPbsCPs141GWCYxDhdDeV3hG4jHDaHac0AbvRWZI
+VaroBzjg4m+2soghn+AfwKAebqwkSH//OpyPLzyuxMzkyqurt6Ii8714tGGzQjsr
+U+5gl+3jwai45JWjHtLibKW+XyAjtVVaJJRyqHdZs6rYBaacUrOc4tPNxCOwCIGe
+rC0WyChAAs99VY/RHjl5ope2c8t1921cSNC9092YUyylq9K8LECD58KsLRjISuOz
+UQIDAQAB
+-----END PUBLIC KEY-----
+'@
 
 if (-not $IsWindows) {
     throw "install.ps1 is intended for Windows. Use install.sh on macOS or Linux."
@@ -94,6 +107,65 @@ function Resolve-EffectiveEndpoints {
     throw "Set both EXCEEDS_INK_OTLP_HTTP_ENDPOINT and EXCEEDS_INK_COMPAT_ENDPOINT to override the collector, or set neither to use the default Exceeds Vercel URLs."
 }
 
+function Get-ReleasePublicKeyPem {
+    if (-not [string]::IsNullOrWhiteSpace($env:EXCEEDS_INK_RELEASE_PUBLIC_KEY_PEM)) {
+        return $env:EXCEEDS_INK_RELEASE_PUBLIC_KEY_PEM
+    }
+    return $ProductionReleasePublicKeyPem
+}
+
+function Get-SignedManifestAssetHash {
+    param(
+        [string]$ManifestPath,
+        [string]$SignaturePath,
+        [string]$AssetName,
+        [string]$ExpectedVersion
+    )
+
+    if (-not (Test-Path -LiteralPath $ManifestPath) -or -not (Test-Path -LiteralPath $SignaturePath)) {
+        throw "release is not trusted: signed release manifest or signature is missing. For local release testing, publish release-manifest.json and release-manifest.rsa.sig and set EXCEEDS_INK_RELEASE_PUBLIC_KEY_PEM to the PEM public key that signed it."
+    }
+
+    $manifestBytes = [System.IO.File]::ReadAllBytes($ManifestPath)
+    $signatureText = ([System.IO.File]::ReadAllText($SignaturePath) -replace "\s", "")
+    try {
+        $signatureBytes = [Convert]::FromBase64String($signatureText)
+    } catch {
+        throw "release is not trusted: release manifest signature is not valid base64. For local release testing, set EXCEEDS_INK_RELEASE_PUBLIC_KEY_PEM to the PEM public key that signed the manifest."
+    }
+
+    $rsa = [System.Security.Cryptography.RSA]::Create()
+    try {
+        $pem = Get-ReleasePublicKeyPem
+        $rsa.ImportFromPem($pem.AsSpan())
+        $verified = $rsa.VerifyData(
+            $manifestBytes,
+            $signatureBytes,
+            [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+            [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+        )
+    } finally {
+        $rsa.Dispose()
+    }
+    if (-not $verified) {
+        throw "release is not trusted: RSA-SHA256 release manifest signature verification failed. For local release testing, set EXCEEDS_INK_RELEASE_PUBLIC_KEY_PEM to the PEM public key that signed the manifest."
+    }
+
+    $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+    if ($manifest.version -ne $ExpectedVersion) {
+        throw "release is not trusted: manifest version mismatch. Expected $ExpectedVersion but found $($manifest.version)."
+    }
+    $asset = @($manifest.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1)
+    if (-not $asset) {
+        throw "release is not trusted: manifest missing asset $AssetName."
+    }
+    $hash = [string]$asset.sha256
+    if ($hash -notmatch '^[0-9A-Fa-f]{64}$') {
+        throw "release is not trusted: manifest asset sha256 is invalid."
+    }
+    return $hash.ToLowerInvariant()
+}
+
 $binaryOnlyRequested = $BinaryOnly.IsPresent -or (Test-EnvFlag -Value $env:EXCEEDS_INK_BINARY_ONLY)
 
 $resolvedVersion = Resolve-Version -RequestedVersion $Version -Repository $Repo -AssetBase $DownloadBase
@@ -110,7 +182,8 @@ try {
     New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
 
     $archivePath = Join-Path $tmpDir $asset
-    $checksumPath = "$archivePath.sha256"
+    $manifestPath = Join-Path $tmpDir $ReleaseManifestName
+    $signaturePath = Join-Path $tmpDir $ReleaseManifestSignatureName
 
     if ($DownloadBase) {
         Write-Host "Downloading $asset from $baseUrl..."
@@ -118,12 +191,13 @@ try {
         Write-Host "Downloading $asset from $Repo..."
     }
     Invoke-WebRequest -Uri "$baseUrl/$asset" -OutFile $archivePath
-    Invoke-WebRequest -Uri "$baseUrl/$asset.sha256" -OutFile $checksumPath
+    Invoke-WebRequest -Uri "$baseUrl/$ReleaseManifestName" -OutFile $manifestPath
+    Invoke-WebRequest -Uri "$baseUrl/$ReleaseManifestSignatureName" -OutFile $signaturePath
 
-    $expected = ((Get-Content -Path $checksumPath -Raw).Trim() -split "\s+")[0].ToLowerInvariant()
+    $expected = Get-SignedManifestAssetHash -ManifestPath $manifestPath -SignaturePath $signaturePath -AssetName $asset -ExpectedVersion $resolvedVersion
     $actual = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($expected -ne $actual) {
-        throw "Checksum verification failed for $asset"
+        throw "SHA256 verification failed for $asset"
     }
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
