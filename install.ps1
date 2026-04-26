@@ -19,13 +19,13 @@ $ReleaseManifestName = "release-manifest.json"
 $ReleaseManifestSignatureName = "release-manifest.rsa.sig"
 $ProductionReleasePublicKeyPem = @'
 -----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyGnvGBRo2vHxXzjVJ0Mk
-UChaRru59NUnTMBldQBPg/OGlvvIZ0fJQ7UlBfznZOtZzdif3EkFg0ihvYIKqTiL
-trMXY5XD7rcxLB6VvCQ+deHayPbsCPs141GWCYxDhdDeV3hG4jHDaHac0AbvRWZI
-VaroBzjg4m+2soghn+AfwKAebqwkSH//OpyPLzyuxMzkyqurt6Ii8714tGGzQjsr
-U+5gl+3jwai45JWjHtLibKW+XyAjtVVaJJRyqHdZs6rYBaacUrOc4tPNxCOwCIGe
-rC0WyChAAs99VY/RHjl5ope2c8t1921cSNC9092YUyylq9K8LECD58KsLRjISuOz
-UQIDAQAB
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlnPeY/YmSu1zHZTUTKyD
+v7xVo+7OfHHjHtmphaRtrzbX+lESyXhgEKGaqbPXiSlwq52OqAME7HN5aouMJ5yB
+PYXU4lHZw9ufprvo8zsOZXFW/ajFI1kP8sbsU5ZjByM2iNikO7urYzETaKWaFAMh
+thsK7ie1+mkCe+9s8ZNiFi2B/x0oRYIUylOY18/WAp8gv5ilJPCUlL2amjkuso5t
+B0JVlFOIe6aka4agJVyss5MW0UqKRdv2q53vbw/537xYcJmB1fVAj6NhN8ALY9Dj
+oinfdbjpS3lDeIRxXTjGcB96HacTUmZvPfcXyoSiqjVatz9pCTRG7zwsmLapl4lC
+FQIDAQAB
 -----END PUBLIC KEY-----
 '@
 
