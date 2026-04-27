@@ -4,6 +4,7 @@ set -eu
 # Public Exceeds collector (Vercel). Override both OTLP + compat together if you use a different host.
 DEFAULT_OTLP_HTTP="https://exceeds-ink.vercel.app/api/v1/otlp"
 DEFAULT_COMPAT="https://exceeds-ink.vercel.app/api/v1/ingest"
+TERMS_URL="https://exceeds-ink.vercel.app/tos"
 RELEASE_MANIFEST_NAME="release-manifest.json"
 RELEASE_MANIFEST_SIG_NAME="release-manifest.rsa.sig"
 
@@ -45,6 +46,8 @@ Usage: curl -fsSL https://raw.githubusercontent.com/Exceeds-AI/exceeds-ink-downl
 By default this installs the binary, clears any existing local machine registration state, runs
 `exceeds-ink setup`, completes machine registration, then `exceeds-ink install --all` against the
 public Exceeds Vercel collector. Rerunning the installer intentionally re-pairs the machine.
+You must accept the Exceeds Ink Terms of Service before setup/install runs:
+https://exceeds-ink.vercel.app/tos
 Afterward run `exceeds-ink init` in each git repo you want to track.
 
 Optional flags:
@@ -332,6 +335,29 @@ resolve_effective_endpoints() {
   exit 1
 }
 
+confirm_terms_acceptance() {
+  echo "Please review the Exceeds Ink Terms of Service before setup/install:"
+  echo "  $TERMS_URL"
+  printf "Do you accept the Exceeds Ink Terms of Service? [y/N] "
+  answer=""
+  if [ -r /dev/tty ]; then
+    if ! IFS= read -r answer < /dev/tty 2>/dev/null; then
+      IFS= read -r answer || answer=""
+    fi
+  else
+    IFS= read -r answer || answer=""
+  fi
+  case "$answer" in
+    y|Y|yes|YES|Yes)
+      return 0
+      ;;
+    *)
+      echo "Terms of Service were not accepted. Aborting install." >&2
+      exit 1
+      ;;
+  esac
+}
+
 kv_value() {
   key="$1"
   content="$2"
@@ -415,6 +441,7 @@ run_machine_registration() {
 
 run_setup_and_install() {
   install_path="$1"
+  confirm_terms_acceptance
   resolve_effective_endpoints
   ENDPOINT_FLAG="$(resolve_endpoint_trust_flag)" || exit 1
 
