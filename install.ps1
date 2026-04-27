@@ -15,6 +15,7 @@ $ErrorActionPreference = "Stop"
 
 $DefaultOtlpHttp = "https://exceeds-ink.vercel.app/api/v1/otlp"
 $DefaultCompat = "https://exceeds-ink.vercel.app/api/v1/ingest"
+$TermsUrl = "https://exceeds-ink.vercel.app/tos"
 $ReleaseManifestName = "release-manifest.json"
 $ReleaseManifestSignatureName = "release-manifest.rsa.sig"
 $ProductionReleasePublicKeyPem = @'
@@ -85,6 +86,15 @@ function Test-EnvFlag {
         "yes" { return $true }
         "on" { return $true }
         default { return $false }
+    }
+}
+
+function Confirm-TermsAcceptance {
+    Write-Host "Please review the Exceeds Ink Terms of Service before setup/install:"
+    Write-Host "  $TermsUrl"
+    $answer = Read-Host "Do you accept the Exceeds Ink Terms of Service? [y/N]"
+    if ($answer -notin @("y", "Y", "yes", "YES", "Yes")) {
+        throw "Terms of Service were not accepted. Aborting install."
     }
 }
 
@@ -208,6 +218,7 @@ try {
     Write-Host "Installed exceeds-ink to $binaryPath"
 
     if (-not $binaryOnlyRequested) {
+        Confirm-TermsAcceptance
         $eff = Resolve-EffectiveEndpoints -Otlp $OtlpHttpEndpoint -Compat $CompatEndpoint -DefaultOtlp $DefaultOtlpHttp -DefaultCompat $DefaultCompat
         Write-Host "Running exceeds-ink setup (collector: Exceeds Vercel or your overrides)..."
         $setupArgs = @(
