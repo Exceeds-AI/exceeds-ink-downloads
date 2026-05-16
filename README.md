@@ -7,6 +7,7 @@ This repository is a distribution mirror. The private source of truth lives in t
 - `install.sh`
 - `install.ps1`
 - platform archives and `.sha256` files
+- the signed VS Code/Cursor extension VSIX
 - `SHA256SUMS`
 
 Install commands:
@@ -15,7 +16,7 @@ Install commands:
 curl -fsSL https://raw.githubusercontent.com/Exceeds-AI/exceeds-ink-downloads/latest/install.sh | sh
 ```
 
-By default this installs the binary, runs `exceeds-ink setup` and `exceeds-ink install --all` against the public Exceeds Vercel collector. Afterward run `exceeds-ink init` in each git repository you want to track. Use `--binary-only` or `EXCEEDS_INK_BINARY_ONLY=1` to install only the binary. The macOS/Linux installer still leaves `PATH` unchanged, but now prints shell-specific commands to help you add `~/.exceeds-ink/bin` yourself and gives you an absolute-path verification command you can run immediately.
+By default this installs the binary, verifies and installs the signed VSIX into any `cursor` or `code` CLI found on `PATH`, runs `exceeds-ink setup`, and runs `exceeds-ink install --all` against the public Exceeds Vercel collector. Afterward run `exceeds-ink init` in each git repository you want to track. Use `--binary-only` or `EXCEEDS_INK_BINARY_ONLY=1` to install only the binary, or `--no-vscode-extension` / `EXCEEDS_INK_INSTALL_VSCODE_EXTENSION=0` to skip only the extension. The macOS/Linux installer still leaves `PATH` unchanged, but now prints shell-specific commands to help you add `~/.exceeds-ink/bin` yourself and gives you an absolute-path verification command you can run immediately.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/Exceeds-AI/exceeds-ink-downloads/latest/install.ps1 | iex"
