@@ -20,6 +20,7 @@ INSTALLER_REGISTRATION_TIMEOUT_SECONDS="${EXCEEDS_INK_INSTALLER_REGISTRATION_TIM
 INSTALLER_REGISTRATION_POLL_SECONDS="${EXCEEDS_INK_INSTALLER_REGISTRATION_POLL_SECONDS:-5}"
 ENDPOINT_TRUST_FLAG=""
 BINARY_ONLY=0
+INSTALL_VSCODE_EXTENSION=1
 
 release_public_key_pem() {
   if [ -n "${EXCEEDS_INK_RELEASE_PUBLIC_KEY_PEM:-}" ]; then
@@ -56,6 +57,7 @@ Optional flags:
   --download-base <url>           Override the public asset base URL
   --repo <owner/name>             Override the GitHub repository used for releases
   --binary-only                   Only download and install the binary (skip setup / install --all)
+  --no-vscode-extension           Skip VS Code/Cursor extension download and install
   --compat-endpoint <url>         Override compat ingest (requires --otlp-http-endpoint too)
   --otlp-http-endpoint <url>      Override OTLP HTTP (requires --compat-endpoint too)
   --otlp-grpc-endpoint <url>      Optional; passed through when set
@@ -95,6 +97,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --binary-only)
       BINARY_ONLY=1
+      shift 1
+      ;;
+    --no-vscode-extension)
+      INSTALL_VSCODE_EXTENSION=0
       shift 1
       ;;
     --compat-endpoint)
@@ -139,6 +145,10 @@ done
 
 case "$(printf '%s' "${EXCEEDS_INK_BINARY_ONLY:-}" | tr '[:upper:]' '[:lower:]')" in
   1|true|yes|on) BINARY_ONLY=1 ;;
+esac
+
+case "$(printf '%s' "${EXCEEDS_INK_INSTALL_VSCODE_EXTENSION:-}" | tr '[:upper:]' '[:lower:]')" in
+  0|false|no|off) INSTALL_VSCODE_EXTENSION=0 ;;
 esac
 
 need_cmd() {
@@ -281,6 +291,29 @@ verify_archive_sha256() {
   if [ "$expected" != "$actual" ]; then
     echo "SHA256 verification failed for $file" >&2
     exit 1
+  fi
+}
+
+install_vscode_extension() {
+  vsix_path="$1"
+
+  if [ "$INSTALL_VSCODE_EXTENSION" != "1" ]; then
+    echo "Skipping VS Code/Cursor extension install (disabled)."
+    return 0
+  fi
+
+  installed=0
+  for editor_cli in cursor code; do
+    if command -v "$editor_cli" >/dev/null 2>&1; then
+      echo "Installing Exceeds Ink extension with $editor_cli..."
+      "$editor_cli" --install-extension "$vsix_path" --force
+      echo "Installed Exceeds Ink extension with $editor_cli."
+      installed=1
+    fi
+  done
+
+  if [ "$installed" != "1" ]; then
+    echo "Skipping VS Code/Cursor extension install; neither cursor nor code is on PATH."
   fi
 }
 
@@ -576,6 +609,7 @@ need_cmd openssl
 TARGET="$(detect_target)"
 RESOLVED_VERSION="$(resolve_version)"
 ASSET="exceeds-ink_${RESOLVED_VERSION}_${TARGET}.tar.gz"
+VSIX_ASSET="exceeds-ink-vscode_${RESOLVED_VERSION}.vsix"
 if [ -n "$DOWNLOAD_BASE" ]; then
   BASE_URL="${DOWNLOAD_BASE%/}/v${RESOLVED_VERSION}"
 else
@@ -589,6 +623,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 ARCHIVE_PATH="$TMP_DIR/$ASSET"
+VSIX_PATH="$TMP_DIR/$VSIX_ASSET"
 MANIFEST_PATH="$TMP_DIR/$RELEASE_MANIFEST_NAME"
 SIGNATURE_PATH="$TMP_DIR/$RELEASE_MANIFEST_SIG_NAME"
 
@@ -603,6 +638,13 @@ curl -fsSL "$BASE_URL/$RELEASE_MANIFEST_SIG_NAME" -o "$SIGNATURE_PATH"
 EXPECTED_SHA256="$(verify_signed_manifest "$MANIFEST_PATH" "$SIGNATURE_PATH" "$ASSET" "$RESOLVED_VERSION")" || exit 1
 verify_archive_sha256 "$ARCHIVE_PATH" "$EXPECTED_SHA256"
 
+if [ "$BINARY_ONLY" != "1" ] && [ "$INSTALL_VSCODE_EXTENSION" = "1" ]; then
+  echo "Downloading ${VSIX_ASSET} from ${BASE_URL}..."
+  curl -fsSL "$BASE_URL/$VSIX_ASSET" -o "$VSIX_PATH"
+  EXPECTED_VSIX_SHA256="$(verify_signed_manifest "$MANIFEST_PATH" "$SIGNATURE_PATH" "$VSIX_ASSET" "$RESOLVED_VERSION")" || exit 1
+  verify_archive_sha256 "$VSIX_PATH" "$EXPECTED_VSIX_SHA256"
+fi
+
 mkdir -p "$INSTALL_DIR"
 tar -xzf "$ARCHIVE_PATH" -C "$TMP_DIR"
 install_path="$INSTALL_DIR/exceeds-ink"
@@ -613,6 +655,7 @@ echo "Installed exceeds-ink to $install_path"
 
 if [ "$BINARY_ONLY" != "1" ]; then
   run_setup_and_install "$install_path"
+  install_vscode_extension "$VSIX_PATH"
 fi
 
 print_post_install_summary "$INSTALL_DIR" "$install_path" "$BINARY_ONLY"
