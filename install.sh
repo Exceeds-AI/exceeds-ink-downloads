@@ -496,7 +496,7 @@ run_setup_and_install() {
   if [ -n "$API_KEY" ]; then
     set -- "$@" --api-key "$API_KEY"
   fi
-  EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 "$@" || exit 1
+  run_installer_command "$@" || exit 1
 
   run_machine_registration "$install_path"
 
@@ -511,7 +511,15 @@ run_setup_and_install() {
   if [ -n "$API_KEY" ]; then
     set -- "$@" --api-key "$API_KEY"
   fi
-  EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 "$@" || exit 1
+  run_installer_command "$@" || exit 1
+}
+
+run_installer_command() {
+  if [ -r /dev/tty ]; then
+    env EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 "$@" < /dev/tty
+  else
+    env EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 "$@"
+  fi
 }
 
 shell_family() {
