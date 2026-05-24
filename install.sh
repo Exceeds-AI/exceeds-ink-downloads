@@ -306,7 +306,7 @@ install_vscode_extension() {
   for editor_cli in cursor code; do
     if command -v "$editor_cli" >/dev/null 2>&1; then
       echo "Installing Exceeds Ink extension with $editor_cli..."
-      NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--no-deprecation" "$editor_cli" --install-extension "$vsix_path" --force
+      "$editor_cli" --install-extension "$vsix_path" --force
       echo "Installed Exceeds Ink extension with $editor_cli."
       installed=1
     fi
@@ -368,17 +368,15 @@ resolve_effective_endpoints() {
   exit 1
 }
 
-tty_available() {
-  [ -r /dev/tty ] && [ -w /dev/tty ] && : < /dev/tty >/dev/null 2>&1
-}
-
 confirm_terms_acceptance() {
   echo "Please review the Exceeds Ink Terms of Service before setup/install:"
   echo "  $TERMS_URL"
   printf "Do you accept the Exceeds Ink Terms of Service? [y/N] "
   answer=""
-  if tty_available; then
-    IFS= read -r answer < /dev/tty || answer=""
+  if [ -r /dev/tty ]; then
+    if ! IFS= read -r answer < /dev/tty 2>/dev/null; then
+      IFS= read -r answer || answer=""
+    fi
   else
     IFS= read -r answer || answer=""
   fi
@@ -517,7 +515,7 @@ run_setup_and_install() {
 }
 
 run_installer_command() {
-  if tty_available; then
+  if [ -r /dev/tty ]; then
     env EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 "$@" < /dev/tty
   else
     env EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 "$@"
