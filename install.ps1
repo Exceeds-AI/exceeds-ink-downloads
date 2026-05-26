@@ -12,6 +12,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$RequireExplicitVersion = $true
 
 $DefaultOtlpHttp = "https://exceeds-ink-staging.vercel.app/api/v1/otlp"
 $DefaultCompat = "https://exceeds-ink-staging.vercel.app/api/v1/ingest"
@@ -37,6 +38,9 @@ if (-not $IsWindows) {
 function Resolve-Version {
     param([string]$RequestedVersion, [string]$Repository, [string]$AssetBase)
 
+    if ($RequireExplicitVersion -and (-not $RequestedVersion -or $RequestedVersion -eq "latest")) {
+        throw "This is a staging installer. Specify an explicit version via -Version <version> or EXCEEDS_INK_VERSION."
+    }
     if ($RequestedVersion -and $RequestedVersion -ne "latest") {
         return $RequestedVersion.TrimStart("v")
     }
