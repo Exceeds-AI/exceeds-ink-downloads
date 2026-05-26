@@ -11,6 +11,7 @@ RELEASE_MANIFEST_SIG_NAME="release-manifest.rsa.sig"
 REPO="${EXCEEDS_INK_REPO:-Exceeds-AI/exceeds-ink-downloads}"
 INSTALL_DIR="${EXCEEDS_INK_INSTALL_DIR:-$HOME/.exceeds-ink/bin}"
 VERSION="${EXCEEDS_INK_VERSION:-latest}"
+REQUIRE_EXPLICIT_VERSION=1
 DOWNLOAD_BASE="${EXCEEDS_INK_DOWNLOAD_BASE_URL:-}"
 COMPAT_ENDPOINT="${EXCEEDS_INK_COMPAT_ENDPOINT:-}"
 OTLP_HTTP_ENDPOINT="${EXCEEDS_INK_OTLP_HTTP_ENDPOINT:-}"
@@ -158,7 +159,61 @@ need_cmd() {
   fi
 }
 
+normalize_stable_semver() {
+  candidate="$(printf '%s' "$1" | tr -d '\r' | awk '{print $1}')"
+  candidate="${candidate#v}"
+  if printf '%s' "$candidate" | awk 'BEGIN { ok = 0 } /^[0-9]+\.[0-9]+\.[0-9]+$/ { ok = 1 } END { exit ok ? 0 : 1 }'; then
+    printf '%s' "$candidate"
+    return 0
+  fi
+  return 1
+}
+
+select_highest_stable_semver_from_releases_json() {
+  json="$1"
+  printf '%s\n' "$json" | awk -F'"' '
+    function is_stable(tag) {
+      return tag ~ /^v?[0-9]+\.[0-9]+\.[0-9]+$/
+    }
+    function strip_v(tag) {
+      sub(/^v/, "", tag)
+      return tag
+    }
+    function greater(a, b,    pa, pb, i) {
+      split(a, pa, ".")
+      split(b, pb, ".")
+      for (i = 1; i <= 3; i++) {
+        if ((pa[i] + 0) > (pb[i] + 0)) {
+          return 1
+        }
+        if ((pa[i] + 0) < (pb[i] + 0)) {
+          return 0
+        }
+      }
+      return 0
+    }
+    /"tag_name":/ {
+      tag = $4
+      if (is_stable(tag)) {
+        version = strip_v(tag)
+        if (best == "" || greater(version, best)) {
+          best = version
+        }
+      }
+    }
+    END {
+      if (best != "") {
+        print best
+      }
+    }
+  '
+}
+
 resolve_version() {
+  if [ "$REQUIRE_EXPLICIT_VERSION" = "1" ] && { [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; }; then
+    echo "This is a staging installer. Specify an explicit version via --version <version> or EXCEEDS_INK_VERSION." >&2
+    exit 1
+  fi
   if [ "$VERSION" != "latest" ]; then
     printf '%s' "${VERSION#v}"
     return
@@ -175,12 +230,21 @@ resolve_version() {
   fi
 
   latest_json="$(curl -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases/latest")"
-  latest_version="$(printf '%s\n' "$latest_json" | awk -F'"' '/"tag_name":/ { sub(/^v/, "", $4); print $4; exit }')"
+  latest_tag="$(printf '%s\n' "$latest_json" | awk -F'"' '/"tag_name":/ { print $4; exit }')"
+  latest_version="$(normalize_stable_semver "$latest_tag" || true)"
+  if [ -n "$latest_version" ]; then
+    printf '%s' "$latest_version"
+    return
+  fi
+
+  releases_json="$(curl -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases?per_page=30")"
+  latest_version="$(select_highest_stable_semver_from_releases_json "$releases_json" || true)"
   if [ -z "$latest_version" ]; then
     echo "Failed to resolve latest release for $REPO" >&2
     if [ -n "$DOWNLOAD_BASE" ]; then
       echo "Set EXCEEDS_INK_VERSION or publish ${DOWNLOAD_BASE%/}/LATEST." >&2
     fi
+    echo "Ensure releases include at least one stable semver tag (vX.Y.Z)." >&2
     exit 1
   fi
   printf '%s' "$latest_version"

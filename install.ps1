@@ -12,6 +12,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$RequireExplicitVersion = $true
 
 $DefaultOtlpHttp = "https://exceeds-ink-staging.vercel.app/api/v1/otlp"
 $DefaultCompat = "https://exceeds-ink-staging.vercel.app/api/v1/ingest"
@@ -34,9 +35,31 @@ if (-not $IsWindows) {
     throw "install.ps1 is intended for Windows. Use install.sh on macOS or Linux."
 }
 
+function ConvertTo-StableVersion {
+    param([string]$Tag)
+
+    if ([string]::IsNullOrWhiteSpace($Tag)) {
+        return $null
+    }
+
+    $normalized = $Tag.Trim()
+    if ($normalized.StartsWith("v")) {
+        $normalized = $normalized.Substring(1)
+    }
+
+    if ($normalized -match '^\d+\.\d+\.\d+$') {
+        return $normalized
+    }
+
+    return $null
+}
+
 function Resolve-Version {
     param([string]$RequestedVersion, [string]$Repository, [string]$AssetBase)
 
+    if ($RequireExplicitVersion -and (-not $RequestedVersion -or $RequestedVersion -eq "latest")) {
+        throw "This is a staging installer. Specify an explicit version via -Version <version> or EXCEEDS_INK_VERSION."
+    }
     if ($RequestedVersion -and $RequestedVersion -ne "latest") {
         return $RequestedVersion.TrimStart("v")
     }
@@ -55,13 +78,34 @@ function Resolve-Version {
     }
 
     $release = Invoke-RestMethod -Headers @{ Accept = "application/vnd.github+json" } -Uri "https://api.github.com/repos/$Repository/releases/latest"
-    if (-not $release.tag_name) {
-        if ($AssetBase) {
-            throw "Failed to resolve the latest release for $Repository. Set EXCEEDS_INK_VERSION or publish $($AssetBase.TrimEnd('/'))/LATEST."
-        }
-        throw "Failed to resolve the latest release for $Repository"
+    $latestStable = ConvertTo-StableVersion -Tag $release.tag_name
+    if ($latestStable) {
+        return $latestStable
     }
-    return $release.tag_name.TrimStart("v")
+
+    $releases = Invoke-RestMethod -Headers @{ Accept = "application/vnd.github+json" } -Uri "https://api.github.com/repos/$Repository/releases?per_page=30"
+    $highestVersionObject = $null
+    $highestVersionString = $null
+    foreach ($item in @($releases)) {
+        $candidate = ConvertTo-StableVersion -Tag $item.tag_name
+        if (-not $candidate) {
+            continue
+        }
+        $candidateVersion = [System.Version]::Parse($candidate)
+        if (($null -eq $highestVersionObject) -or ($candidateVersion -gt $highestVersionObject)) {
+            $highestVersionObject = $candidateVersion
+            $highestVersionString = $candidate
+        }
+    }
+
+    if ($highestVersionString) {
+        return $highestVersionString
+    }
+
+    if ($AssetBase) {
+        throw "Failed to resolve the latest release for $Repository. Set EXCEEDS_INK_VERSION or publish $($AssetBase.TrimEnd('/'))/LATEST. Ensure releases include stable semver tags like vX.Y.Z."
+    }
+    throw "Failed to resolve the latest release for $Repository. Ensure releases include stable semver tags like vX.Y.Z."
 }
 
 function Get-Target {
