@@ -11,6 +11,7 @@ RELEASE_MANIFEST_SIG_NAME="release-manifest.rsa.sig"
 REPO="${EXCEEDS_INK_REPO:-Exceeds-AI/exceeds-ink-downloads}"
 INSTALL_DIR="${EXCEEDS_INK_INSTALL_DIR:-$HOME/.exceeds-ink/bin}"
 VERSION="${EXCEEDS_INK_VERSION:-latest}"
+REQUIRE_EXPLICIT_VERSION=0
 DOWNLOAD_BASE="${EXCEEDS_INK_DOWNLOAD_BASE_URL:-}"
 COMPAT_ENDPOINT="${EXCEEDS_INK_COMPAT_ENDPOINT:-}"
 OTLP_HTTP_ENDPOINT="${EXCEEDS_INK_OTLP_HTTP_ENDPOINT:-}"
@@ -159,6 +160,10 @@ need_cmd() {
 }
 
 resolve_version() {
+  if [ "$REQUIRE_EXPLICIT_VERSION" = "1" ] && { [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; }; then
+    echo "This is a staging installer. Specify an explicit version via --version <version> or EXCEEDS_INK_VERSION." >&2
+    exit 1
+  fi
   if [ "$VERSION" != "latest" ]; then
     printf '%s' "${VERSION#v}"
     return
