@@ -550,6 +550,8 @@ run_machine_registration() {
 
 run_setup_and_install() {
   install_path="$1"
+  export EXCEEDS_INK_DISABLE_AUTO_UPGRADE=1
+
   confirm_terms_acceptance
   resolve_effective_endpoints
   ENDPOINT_FLAG="$(resolve_endpoint_trust_flag)" || exit 1
