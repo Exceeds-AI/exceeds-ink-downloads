@@ -468,9 +468,19 @@ kv_value() {
   '
 }
 
+run_machine_bootstrap_command() {
+  install_path="$1"
+  shift
+  env \
+    EXCEEDS_INK_ALLOW_RUNTIME_REMOTE_ENDPOINT_ENV=1 \
+    EXCEEDS_INK_REMOTE_INGEST_ENDPOINT="$EFF_COMPAT" \
+    EXCEEDS_INK_REMOTE_API_KEY="$API_KEY" \
+    "$install_path" "$@"
+}
+
 run_machine_registration() {
   install_path="$1"
-  status_output="$("$install_path" machine status 2>&1)" || {
+  status_output="$(run_machine_bootstrap_command "$install_path" machine status 2>&1)" || {
     printf '%s\n' "$status_output" >&2
     exit 1
   }
@@ -481,7 +491,7 @@ run_machine_registration() {
   fi
 
   echo "Running exceeds-ink machine pair..."
-  pair_output="$("$install_path" machine pair 2>&1)" || {
+  pair_output="$(run_machine_bootstrap_command "$install_path" machine pair 2>&1)" || {
     printf '%s\n' "$pair_output" >&2
     exit 1
   }
@@ -496,7 +506,7 @@ run_machine_registration() {
   deadline_epoch=$(( $(date +%s) + INSTALLER_REGISTRATION_TIMEOUT_SECONDS ))
   last_status=""
   while :; do
-    status_output="$("$install_path" machine status 2>&1)" || {
+    status_output="$(run_machine_bootstrap_command "$install_path" machine status 2>&1)" || {
       printf '%s\n' "$status_output" >&2
       exit 1
     }
