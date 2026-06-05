@@ -13,6 +13,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $RequireExplicitVersion = $false
+$StagingReleaseInstaller = $false
 
 $DefaultOtlpHttp = "https://exceeds-ink.vercel.app/api/v1/otlp"
 $DefaultCompat = "https://exceeds-ink.vercel.app/api/v1/ingest"
@@ -54,6 +55,52 @@ function ConvertTo-StableVersion {
     return $null
 }
 
+function ConvertTo-StagingAssetVersion {
+    param([string]$Tag)
+
+    if ([string]::IsNullOrWhiteSpace($Tag)) {
+        return $null
+    }
+    $normalized = $Tag.Trim()
+    if ($normalized.StartsWith("staging-v")) {
+        $normalized = $normalized.Substring("staging-v".Length)
+    } elseif ($normalized.StartsWith("v")) {
+        $normalized = $normalized.Substring(1)
+    }
+
+    if ($normalized -match '^(\d+\.\d+\.\d+)$') {
+        return "$($Matches[1])-staging.0"
+    }
+    if ($normalized -match '^(\d+\.\d+\.\d+)-(\d+)$') {
+        return "$($Matches[1])-staging.$($Matches[2])"
+    }
+    if ($normalized -match '^\d+\.\d+\.\d+-staging\.\d+$') {
+        return $normalized
+    }
+    return $null
+}
+
+function ConvertTo-StagingReleaseTag {
+    param([string]$AssetVersion)
+
+    if ($AssetVersion -match '^(\d+\.\d+\.\d+)-staging\.(\d+)$') {
+        if ($Matches[2] -eq "0") {
+            return "staging-v$($Matches[1])"
+        }
+        return "staging-v$($Matches[1])-$($Matches[2])"
+    }
+    return $null
+}
+
+function New-ReleaseMetadata {
+    param([string]$Version, [string]$Tag)
+
+    return [pscustomobject]@{
+        Version = $Version
+        Tag = $Tag
+    }
+}
+
 function Resolve-Version {
     param([string]$RequestedVersion, [string]$Repository, [string]$AssetBase)
 
@@ -61,7 +108,18 @@ function Resolve-Version {
         throw "This is a staging installer. Specify an explicit version via -Version <version> or EXCEEDS_INK_VERSION."
     }
     if ($RequestedVersion -and $RequestedVersion -ne "latest") {
-        return $RequestedVersion.TrimStart("v")
+        if ($StagingReleaseInstaller) {
+            $stagingVersion = ConvertTo-StagingAssetVersion -Tag $RequestedVersion
+            if (-not $stagingVersion) {
+                throw "Invalid staging version '$RequestedVersion'. Expected X.Y.Z, X.Y.Z-N, staging-vX.Y.Z, or staging-vX.Y.Z-N."
+            }
+            return New-ReleaseMetadata -Version $stagingVersion -Tag (ConvertTo-StagingReleaseTag -AssetVersion $stagingVersion)
+        }
+        $stableVersion = ConvertTo-StableVersion -Tag $RequestedVersion
+        if (-not $stableVersion) {
+            throw "Invalid version '$RequestedVersion'. Expected X.Y.Z or vX.Y.Z."
+        }
+        return New-ReleaseMetadata -Version $stableVersion -Tag "v$stableVersion"
     }
 
     if ($AssetBase) {
@@ -70,7 +128,17 @@ function Resolve-Version {
             $response = Invoke-WebRequest -Uri $latestUrl -UseBasicParsing
             $latest = ($response.Content -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 1)
             if ($latest) {
-                return $latest.Trim().TrimStart("v")
+                if ($StagingReleaseInstaller) {
+                    $stagingVersion = ConvertTo-StagingAssetVersion -Tag $latest
+                    if ($stagingVersion) {
+                        return New-ReleaseMetadata -Version $stagingVersion -Tag (ConvertTo-StagingReleaseTag -AssetVersion $stagingVersion)
+                    }
+                } else {
+                    $stableVersion = ConvertTo-StableVersion -Tag $latest
+                    if ($stableVersion) {
+                        return New-ReleaseMetadata -Version $stableVersion -Tag "v$stableVersion"
+                    }
+                }
             }
         } catch {
             # Fall back to GitHub release discovery.
@@ -80,7 +148,7 @@ function Resolve-Version {
     $release = Invoke-RestMethod -Headers @{ Accept = "application/vnd.github+json" } -Uri "https://api.github.com/repos/$Repository/releases/latest"
     $latestStable = ConvertTo-StableVersion -Tag $release.tag_name
     if ($latestStable) {
-        return $latestStable
+        return New-ReleaseMetadata -Version $latestStable -Tag "v$latestStable"
     }
 
     $releases = Invoke-RestMethod -Headers @{ Accept = "application/vnd.github+json" } -Uri "https://api.github.com/repos/$Repository/releases?per_page=30"
@@ -99,7 +167,7 @@ function Resolve-Version {
     }
 
     if ($highestVersionString) {
-        return $highestVersionString
+        return New-ReleaseMetadata -Version $highestVersionString -Tag "v$highestVersionString"
     }
 
     if ($AssetBase) {
@@ -222,13 +290,15 @@ function Get-SignedManifestAssetHash {
 
 $binaryOnlyRequested = $BinaryOnly.IsPresent -or (Test-EnvFlag -Value $env:EXCEEDS_INK_BINARY_ONLY)
 
-$resolvedVersion = Resolve-Version -RequestedVersion $Version -Repository $Repo -AssetBase $DownloadBase
+$resolvedRelease = Resolve-Version -RequestedVersion $Version -Repository $Repo -AssetBase $DownloadBase
+$resolvedVersion = $resolvedRelease.Version
+$resolvedReleaseTag = $resolvedRelease.Tag
 $target = Get-Target
 $asset = "exceeds-ink_${resolvedVersion}_${target}.zip"
 if ($DownloadBase) {
-    $baseUrl = "$($DownloadBase.TrimEnd('/'))/v$resolvedVersion"
+    $baseUrl = "$($DownloadBase.TrimEnd('/'))/$resolvedReleaseTag"
 } else {
-    $baseUrl = "https://github.com/$Repo/releases/download/v$resolvedVersion"
+    $baseUrl = "https://github.com/$Repo/releases/download/$resolvedReleaseTag"
 }
 $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("exceeds-ink-install-" + [System.Guid]::NewGuid().ToString("n"))
 

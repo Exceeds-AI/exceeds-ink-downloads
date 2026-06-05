@@ -12,6 +12,7 @@ REPO="${EXCEEDS_INK_REPO:-Exceeds-AI/exceeds-ink-downloads}"
 INSTALL_DIR="${EXCEEDS_INK_INSTALL_DIR:-$HOME/.exceeds-ink/bin}"
 VERSION="${EXCEEDS_INK_VERSION:-latest}"
 REQUIRE_EXPLICIT_VERSION=0
+STAGING_RELEASE_INSTALLER=0
 DOWNLOAD_BASE="${EXCEEDS_INK_DOWNLOAD_BASE_URL:-}"
 COMPAT_ENDPOINT="${EXCEEDS_INK_COMPAT_ENDPOINT:-}"
 OTLP_HTTP_ENDPOINT="${EXCEEDS_INK_OTLP_HTTP_ENDPOINT:-}"
@@ -169,6 +170,48 @@ normalize_stable_semver() {
   return 1
 }
 
+staging_asset_version_from_tag() {
+  candidate="$(printf '%s' "$1" | tr -d '\r' | awk '{print $1}')"
+  candidate="${candidate#staging-v}"
+  candidate="${candidate#v}"
+  printf '%s\n' "$candidate" | awk '
+    /^[0-9]+\.[0-9]+\.[0-9]+$/ {
+      print $0 "-staging.0"
+      found = 1
+    }
+    /^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$/ {
+      split($0, parts, "-")
+      print parts[1] "-staging." parts[2]
+      found = 1
+    }
+    /^[0-9]+\.[0-9]+\.[0-9]+-staging\.[0-9]+$/ {
+      print $0
+      found = 1
+    }
+    END {
+      exit found ? 0 : 1
+    }
+  '
+}
+
+staging_release_tag_from_asset_version() {
+  asset_version="$1"
+  printf '%s\n' "$asset_version" | awk '
+    /^[0-9]+\.[0-9]+\.[0-9]+-staging\.[0-9]+$/ {
+      split($0, parts, "-staging.")
+      if (parts[2] == "0") {
+        print "staging-v" parts[1]
+      } else {
+        print "staging-v" parts[1] "-" parts[2]
+      }
+      found = 1
+    }
+    END {
+      exit found ? 0 : 1
+    }
+  '
+}
+
 select_highest_stable_semver_from_releases_json() {
   json="$1"
   printf '%s\n' "$json" | awk -F'"' '
@@ -209,22 +252,45 @@ select_highest_stable_semver_from_releases_json() {
   '
 }
 
-resolve_version() {
+resolve_release_metadata() {
   if [ "$REQUIRE_EXPLICIT_VERSION" = "1" ] && { [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; }; then
     echo "This is a staging installer. Specify an explicit version via --version <version> or EXCEEDS_INK_VERSION." >&2
     exit 1
   fi
   if [ "$VERSION" != "latest" ]; then
-    printf '%s' "${VERSION#v}"
+    if [ "$STAGING_RELEASE_INSTALLER" = "1" ]; then
+      RESOLVED_VERSION="$(staging_asset_version_from_tag "$VERSION" || true)"
+      if [ -z "$RESOLVED_VERSION" ]; then
+        echo "Invalid staging version '$VERSION' (expected X.Y.Z, X.Y.Z-N, staging-vX.Y.Z, or staging-vX.Y.Z-N)." >&2
+        exit 1
+      fi
+      RESOLVED_RELEASE_TAG="$(staging_release_tag_from_asset_version "$RESOLVED_VERSION")"
+      return
+    fi
+    RESOLVED_VERSION="$(normalize_stable_semver "$VERSION" || true)"
+    if [ -z "$RESOLVED_VERSION" ]; then
+      echo "Invalid version '$VERSION' (expected X.Y.Z or vX.Y.Z)." >&2
+      exit 1
+    fi
+    RESOLVED_RELEASE_TAG="v${RESOLVED_VERSION}"
     return
   fi
 
   if [ -n "$DOWNLOAD_BASE" ]; then
     latest_url="${DOWNLOAD_BASE%/}/LATEST"
     latest_version="$(curl -fsSL "$latest_url" 2>/dev/null | tr -d '\r' | awk 'NF { print; exit }' || true)"
-    latest_version="${latest_version#v}"
+    if [ "$STAGING_RELEASE_INSTALLER" = "1" ]; then
+      latest_version="$(staging_asset_version_from_tag "$latest_version" || true)"
+    else
+      latest_version="$(normalize_stable_semver "$latest_version" || true)"
+    fi
     if [ -n "$latest_version" ]; then
-      printf '%s' "$latest_version"
+      RESOLVED_VERSION="$latest_version"
+      if [ "$STAGING_RELEASE_INSTALLER" = "1" ]; then
+        RESOLVED_RELEASE_TAG="$(staging_release_tag_from_asset_version "$RESOLVED_VERSION")"
+      else
+        RESOLVED_RELEASE_TAG="v${RESOLVED_VERSION}"
+      fi
       return
     fi
   fi
@@ -233,7 +299,8 @@ resolve_version() {
   latest_tag="$(printf '%s\n' "$latest_json" | awk -F'"' '/"tag_name":/ { print $4; exit }')"
   latest_version="$(normalize_stable_semver "$latest_tag" || true)"
   if [ -n "$latest_version" ]; then
-    printf '%s' "$latest_version"
+    RESOLVED_VERSION="$latest_version"
+    RESOLVED_RELEASE_TAG="v${RESOLVED_VERSION}"
     return
   fi
 
@@ -247,7 +314,8 @@ resolve_version() {
     echo "Ensure releases include at least one stable semver tag (vX.Y.Z)." >&2
     exit 1
   fi
-  printf '%s' "$latest_version"
+  RESOLVED_VERSION="$latest_version"
+  RESOLVED_RELEASE_TAG="v${RESOLVED_VERSION}"
 }
 
 detect_target() {
@@ -468,9 +536,19 @@ kv_value() {
   '
 }
 
+run_machine_bootstrap_command() {
+  install_path="$1"
+  shift
+  env \
+    EXCEEDS_INK_ALLOW_RUNTIME_REMOTE_ENDPOINT_ENV=1 \
+    EXCEEDS_INK_REMOTE_INGEST_ENDPOINT="$EFF_COMPAT" \
+    EXCEEDS_INK_REMOTE_API_KEY="$API_KEY" \
+    "$install_path" "$@"
+}
+
 run_machine_registration() {
   install_path="$1"
-  status_output="$("$install_path" machine status 2>&1)" || {
+  status_output="$(run_machine_bootstrap_command "$install_path" machine status 2>&1)" || {
     printf '%s\n' "$status_output" >&2
     exit 1
   }
@@ -481,7 +559,7 @@ run_machine_registration() {
   fi
 
   echo "Running exceeds-ink machine pair..."
-  pair_output="$("$install_path" machine pair 2>&1)" || {
+  pair_output="$(run_machine_bootstrap_command "$install_path" machine pair 2>&1)" || {
     printf '%s\n' "$pair_output" >&2
     exit 1
   }
@@ -496,7 +574,7 @@ run_machine_registration() {
   deadline_epoch=$(( $(date +%s) + INSTALLER_REGISTRATION_TIMEOUT_SECONDS ))
   last_status=""
   while :; do
-    status_output="$("$install_path" machine status 2>&1)" || {
+    status_output="$(run_machine_bootstrap_command "$install_path" machine status 2>&1)" || {
       printf '%s\n' "$status_output" >&2
       exit 1
     }
@@ -540,6 +618,8 @@ run_machine_registration() {
 
 run_setup_and_install() {
   install_path="$1"
+  export EXCEEDS_INK_DISABLE_AUTO_UPGRADE=1
+
   confirm_terms_acceptance
   resolve_effective_endpoints
   ENDPOINT_FLAG="$(resolve_endpoint_trust_flag)" || exit 1
@@ -681,13 +761,15 @@ need_cmd awk
 need_cmd openssl
 
 TARGET="$(detect_target)"
-RESOLVED_VERSION="$(resolve_version)"
+RESOLVED_VERSION=""
+RESOLVED_RELEASE_TAG=""
+resolve_release_metadata
 ASSET="exceeds-ink_${RESOLVED_VERSION}_${TARGET}.tar.gz"
 VSIX_ASSET="exceeds-ink-vscode_${RESOLVED_VERSION}.vsix"
 if [ -n "$DOWNLOAD_BASE" ]; then
-  BASE_URL="${DOWNLOAD_BASE%/}/v${RESOLVED_VERSION}"
+  BASE_URL="${DOWNLOAD_BASE%/}/${RESOLVED_RELEASE_TAG}"
 else
-  BASE_URL="https://github.com/${REPO}/releases/download/v${RESOLVED_VERSION}"
+  BASE_URL="https://github.com/${REPO}/releases/download/${RESOLVED_RELEASE_TAG}"
 fi
 
 TMP_DIR="$(mktemp -d)"
