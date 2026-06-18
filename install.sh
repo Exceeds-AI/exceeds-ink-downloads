@@ -815,3 +815,4 @@ if [ "$BINARY_ONLY" != "1" ]; then
 fi
 
 print_post_install_summary "$INSTALL_DIR" "$install_path" "$BINARY_ONLY"
+
