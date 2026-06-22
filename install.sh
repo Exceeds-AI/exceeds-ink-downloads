@@ -9,7 +9,7 @@ RELEASE_MANIFEST_NAME="release-manifest.json"
 RELEASE_MANIFEST_SIG_NAME="release-manifest.rsa.sig"
 
 REPO="${EXCEEDS_INK_REPO:-Exceeds-AI/exceeds-ink-downloads}"
-INSTALL_DIR="${EXCEEDS_INK_INSTALL_DIR:-$HOME/.exceeds-ink/bin}"
+INSTALL_DIR="${EXCEEDS_INK_INSTALL_DIR:-/usr/local/bin}"
 VERSION="${EXCEEDS_INK_VERSION:-latest}"
 REQUIRE_EXPLICIT_VERSION=1
 STAGING_RELEASE_INSTALLER=1
@@ -21,6 +21,9 @@ API_KEY="${EXCEEDS_INK_API_KEY:-}"
 INSTALLER_REGISTRATION_TIMEOUT_SECONDS="${EXCEEDS_INK_INSTALLER_REGISTRATION_TIMEOUT_SECONDS:-600}"
 INSTALLER_REGISTRATION_POLL_SECONDS="${EXCEEDS_INK_INSTALLER_REGISTRATION_POLL_SECONDS:-5}"
 ENDPOINT_TRUST_FLAG=""
+MDM_FLAG=""
+USER_EMAIL=""
+LOCAL_BINARY=""
 BINARY_ONLY=0
 INSTALL_VSCODE_EXTENSION=1
 
@@ -55,15 +58,18 @@ Afterward run `exceeds-ink init` in each git repo you want to track.
 
 Optional flags:
   --version <version>             Install a specific version (for example: 0.1.0)
-  --install-dir <path>            Override the binary install directory
+  --install-dir <path>            Override install directory (default: /usr/local/bin)
   --download-base <url>           Override the public asset base URL
   --repo <owner/name>             Override the GitHub repository used for releases
   --binary-only                   Only download and install the binary (skip setup / install --all)
+  --local-binary <path>           Install from a local exceeds-ink binary instead of downloading
   --no-vscode-extension           Skip VS Code/Cursor extension download and install
   --compat-endpoint <url>         Override compat ingest (requires --otlp-http-endpoint too)
   --otlp-http-endpoint <url>      Override OTLP HTTP (requires --compat-endpoint too)
   --otlp-grpc-endpoint <url>      Optional; passed through when set
   --api-key <key>                 Optional; passed to setup and install when set
+  --mdm                           Non-interactive MDM install (auto-init repos, auto-link machine)
+  --user-email <email>            MDM profile email (requires --mdm; overrides git email deduction)
   --official-endpoint             Explicitly use the built-in public Exceeds endpoint
   --dev-endpoint                  Allow localhost/dev endpoint overrides
   --allow-custom-endpoint         Allow arbitrary custom endpoint overrides
@@ -101,6 +107,10 @@ while [ "$#" -gt 0 ]; do
       BINARY_ONLY=1
       shift 1
       ;;
+    --local-binary)
+      LOCAL_BINARY="$2"
+      shift 2
+      ;;
     --no-vscode-extension)
       INSTALL_VSCODE_EXTENSION=0
       shift 1
@@ -133,6 +143,14 @@ while [ "$#" -gt 0 ]; do
       set_endpoint_trust_flag "--allow-custom-endpoint"
       shift 1
       ;;
+    --mdm)
+      MDM_FLAG="--mdm"
+      shift 1
+      ;;
+    --user-email)
+      USER_EMAIL="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -152,6 +170,37 @@ esac
 case "$(printf '%s' "${EXCEEDS_INK_INSTALL_VSCODE_EXTENSION:-}" | tr '[:upper:]' '[:lower:]')" in
   0|false|no|off) INSTALL_VSCODE_EXTENSION=0 ;;
 esac
+
+case "$(printf '%s' "${EXCEEDS_INK_MDM:-}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on) MDM_FLAG="--mdm" ;;
+esac
+
+if [ -z "$LOCAL_BINARY" ] && [ -n "${EXCEEDS_INK_LOCAL_BINARY:-}" ]; then
+  LOCAL_BINARY="$EXCEEDS_INK_LOCAL_BINARY"
+fi
+
+if [ -z "$USER_EMAIL" ] && [ -n "${EXCEEDS_INK_MDM_USER_EMAIL:-}" ]; then
+  USER_EMAIL="$EXCEEDS_INK_MDM_USER_EMAIL"
+fi
+
+validate_user_email() {
+  if [ -z "$USER_EMAIL" ]; then
+    return 0
+  fi
+  if [ -z "$MDM_FLAG" ]; then
+    echo "--user-email requires --mdm" >&2
+    exit 1
+  fi
+  case "$USER_EMAIL" in
+    *@*) ;;
+    *)
+      echo "Invalid --user-email: expected an email address containing @" >&2
+      exit 1
+      ;;
+  esac
+}
+
+validate_user_email
 
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -505,6 +554,9 @@ tty_available() {
 }
 
 confirm_terms_acceptance() {
+  if [ -n "$MDM_FLAG" ]; then
+    return 0
+  fi
   echo "Please review the Exceeds Ink Terms of Service before setup/install:"
   echo "  $TERMS_URL"
   printf "Do you accept the Exceeds Ink Terms of Service? [y/N] "
@@ -536,19 +588,129 @@ kv_value() {
   '
 }
 
+run_installer_cli() {
+  install_path="$1"
+  shift
+  if [ -n "$MDM_FLAG" ] && [ -n "$USER_EMAIL" ]; then
+    run_installer_command "$install_path" "$MDM_FLAG" --user-email "$USER_EMAIL" "$@"
+  elif [ -n "$MDM_FLAG" ]; then
+    run_installer_command "$install_path" "$MDM_FLAG" "$@"
+  else
+    run_installer_command "$install_path" "$@"
+  fi
+}
+
+run_machine_bootstrap_cli() {
+  install_path="$1"
+  shift
+  if [ -n "$MDM_FLAG" ] && [ -n "$USER_EMAIL" ]; then
+    run_machine_bootstrap_command "$install_path" "$MDM_FLAG" --user-email "$USER_EMAIL" "$@"
+  elif [ -n "$MDM_FLAG" ]; then
+    run_machine_bootstrap_command "$install_path" "$MDM_FLAG" "$@"
+  else
+    run_machine_bootstrap_command "$install_path" "$@"
+  fi
+}
+
+resolve_target_user() {
+  if [ "$(id -u)" -eq 0 ]; then
+    if [ "$(uname -s)" = "Darwin" ]; then
+      /usr/bin/stat -f%Su /dev/console 2>/dev/null || true
+      return
+    fi
+    if command -v logname >/dev/null 2>&1; then
+      logname 2>/dev/null || true
+      return
+    fi
+    printf '%s' "${SUDO_USER:-${USER:-}}"
+    return
+  fi
+  printf '%s' "${USER:-$(id -un)}"
+}
+
+resolve_target_home() {
+  user="$1"
+  if [ -z "$user" ]; then
+    return 1
+  fi
+  if [ "$(uname -s)" = "Darwin" ] && command -v dscl >/dev/null 2>&1; then
+    home="$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+    if [ -n "$home" ]; then
+      printf '%s' "$home"
+      return 0
+    fi
+  fi
+  eval "printf '%s' \"~$user\""
+}
+
+ensure_user_home_layout() {
+  install_path="$1"
+  target_user="$(resolve_target_user)"
+  target_home="$(resolve_target_home "$target_user")"
+  if [ -z "$target_user" ] || [ -z "$target_home" ]; then
+    echo "Could not resolve target user home for exceeds-ink layout." >&2
+    exit 1
+  fi
+  legacy_binary="$target_home/.exceeds-ink/bin/exceeds-ink"
+  if [ "$(id -u)" -eq 0 ] && [ "$target_user" != "$(id -un)" ]; then
+    need_cmd sudo
+    sudo -u "$target_user" mkdir -p "$target_home/.exceeds-ink/bin"
+    sudo -u "$target_user" ln -sf "$install_path" "$legacy_binary"
+  else
+    mkdir -p "$target_home/.exceeds-ink/bin"
+    ln -sf "$install_path" "$legacy_binary"
+  fi
+  echo "Linked $legacy_binary -> $install_path"
+}
+
+run_with_target_context() {
+  if [ "$(id -u)" -eq 0 ]; then
+    target_user="$(resolve_target_user)"
+    target_home="$(resolve_target_home "$target_user")"
+    if [ -z "$target_user" ] || [ "$target_user" = "root" ] || [ -z "$target_home" ]; then
+      echo "Could not resolve console user for exceeds-ink bootstrap." >&2
+      exit 1
+    fi
+    need_cmd sudo
+    sudo -u "$target_user" env HOME="$target_home" "$@"
+    return
+  fi
+  "$@"
+}
+
 run_machine_bootstrap_command() {
   install_path="$1"
   shift
-  env \
-    EXCEEDS_INK_ALLOW_RUNTIME_REMOTE_ENDPOINT_ENV=1 \
-    EXCEEDS_INK_REMOTE_INGEST_ENDPOINT="$EFF_COMPAT" \
-    EXCEEDS_INK_REMOTE_API_KEY="$API_KEY" \
-    "$install_path" "$@"
+  if [ -n "$MDM_FLAG" ] && [ -n "$USER_EMAIL" ]; then
+    run_with_target_context env \
+      EXCEEDS_INK_ALLOW_RUNTIME_REMOTE_ENDPOINT_ENV=1 \
+      EXCEEDS_INK_REMOTE_INGEST_ENDPOINT="$EFF_COMPAT" \
+      EXCEEDS_INK_REMOTE_API_KEY="$API_KEY" \
+      EXCEEDS_INK_DISABLE_AUTO_UPGRADE=1 \
+      EXCEEDS_INK_MDM=1 \
+      EXCEEDS_INK_MDM_USER_EMAIL="$USER_EMAIL" \
+      "$install_path" "$@"
+  elif [ -n "$MDM_FLAG" ]; then
+    run_with_target_context env \
+      EXCEEDS_INK_ALLOW_RUNTIME_REMOTE_ENDPOINT_ENV=1 \
+      EXCEEDS_INK_REMOTE_INGEST_ENDPOINT="$EFF_COMPAT" \
+      EXCEEDS_INK_REMOTE_API_KEY="$API_KEY" \
+      EXCEEDS_INK_DISABLE_AUTO_UPGRADE=1 \
+      EXCEEDS_INK_MDM=1 \
+      "$install_path" "$@"
+  else
+    run_with_target_context env \
+      EXCEEDS_INK_ALLOW_RUNTIME_REMOTE_ENDPOINT_ENV=1 \
+      EXCEEDS_INK_REMOTE_INGEST_ENDPOINT="$EFF_COMPAT" \
+      EXCEEDS_INK_REMOTE_API_KEY="$API_KEY" \
+      EXCEEDS_INK_DISABLE_AUTO_UPGRADE=1 \
+      "$install_path" "$@"
+  fi
 }
 
 run_machine_registration() {
   install_path="$1"
-  status_output="$(run_machine_bootstrap_command "$install_path" machine status 2>&1)" || {
+  status_output="$(run_machine_bootstrap_cli "$install_path" machine status 2>&1)" || {
     printf '%s\n' "$status_output" >&2
     exit 1
   }
@@ -559,10 +721,17 @@ run_machine_registration() {
   fi
 
   echo "Running exceeds-ink machine pair..."
-  pair_output="$(run_machine_bootstrap_command "$install_path" machine pair 2>&1)" || {
-    printf '%s\n' "$pair_output" >&2
-    exit 1
-  }
+  if [ -n "$MDM_FLAG" ]; then
+    pair_output="$(run_machine_bootstrap_cli "$install_path" machine pair --no-browser 2>&1)" || {
+      printf '%s\n' "$pair_output" >&2
+      exit 1
+    }
+  else
+    pair_output="$(run_machine_bootstrap_cli "$install_path" machine pair 2>&1)" || {
+      printf '%s\n' "$pair_output" >&2
+      exit 1
+    }
+  fi
   printf '%s\n' "$pair_output"
 
   pairing_id="$(kv_value machine_pairing_id "$pair_output")"
@@ -574,7 +743,7 @@ run_machine_registration() {
   deadline_epoch=$(( $(date +%s) + INSTALLER_REGISTRATION_TIMEOUT_SECONDS ))
   last_status=""
   while :; do
-    status_output="$(run_machine_bootstrap_command "$install_path" machine status 2>&1)" || {
+    status_output="$(run_machine_bootstrap_cli "$install_path" machine status 2>&1)" || {
       printf '%s\n' "$status_output" >&2
       exit 1
     }
@@ -625,46 +794,110 @@ run_setup_and_install() {
   ENDPOINT_FLAG="$(resolve_endpoint_trust_flag)" || exit 1
 
   echo "Clearing local machine registration state before reinstall..."
-  clear_output="$("$install_path" machine clear 2>&1)" || {
+  clear_output="$(run_installer_cli "$install_path" machine clear 2>&1)" || {
     printf '%s\n' "$clear_output" >&2
     exit 1
   }
   printf '%s\n' "$clear_output"
 
   echo "Running exceeds-ink setup (collector: Exceeds Vercel or your overrides)..."
-  set -- "$install_path" setup \
-    "$ENDPOINT_FLAG" \
-    --otlp-http-endpoint "$EFF_OTLP_HTTP" \
-    --compat-endpoint "$EFF_COMPAT"
-  if [ -n "$OTLP_GRPC_ENDPOINT" ]; then
-    set -- "$@" --otlp-grpc-endpoint "$OTLP_GRPC_ENDPOINT"
+  if [ -n "$OTLP_GRPC_ENDPOINT" ] && [ -n "$API_KEY" ]; then
+    run_installer_cli "$install_path" setup \
+      "$ENDPOINT_FLAG" \
+      --otlp-http-endpoint "$EFF_OTLP_HTTP" \
+      --compat-endpoint "$EFF_COMPAT" \
+      --otlp-grpc-endpoint "$OTLP_GRPC_ENDPOINT" \
+      --api-key "$API_KEY" || exit 1
+  elif [ -n "$OTLP_GRPC_ENDPOINT" ]; then
+    run_installer_cli "$install_path" setup \
+      "$ENDPOINT_FLAG" \
+      --otlp-http-endpoint "$EFF_OTLP_HTTP" \
+      --compat-endpoint "$EFF_COMPAT" \
+      --otlp-grpc-endpoint "$OTLP_GRPC_ENDPOINT" || exit 1
+  elif [ -n "$API_KEY" ]; then
+    run_installer_cli "$install_path" setup \
+      "$ENDPOINT_FLAG" \
+      --otlp-http-endpoint "$EFF_OTLP_HTTP" \
+      --compat-endpoint "$EFF_COMPAT" \
+      --api-key "$API_KEY" || exit 1
+  else
+    run_installer_cli "$install_path" setup \
+      "$ENDPOINT_FLAG" \
+      --otlp-http-endpoint "$EFF_OTLP_HTTP" \
+      --compat-endpoint "$EFF_COMPAT" || exit 1
   fi
-  if [ -n "$API_KEY" ]; then
-    set -- "$@" --api-key "$API_KEY"
-  fi
-  run_installer_command "$@" || exit 1
 
   run_machine_registration "$install_path"
 
   echo "Running exceeds-ink install --all..."
-  set -- "$install_path" install --all \
-    "$ENDPOINT_FLAG" \
-    --otlp-http-endpoint "$EFF_OTLP_HTTP" \
-    --compat-endpoint "$EFF_COMPAT"
-  if [ -n "$OTLP_GRPC_ENDPOINT" ]; then
-    set -- "$@" --otlp-grpc-endpoint "$OTLP_GRPC_ENDPOINT"
+  if [ -n "$OTLP_GRPC_ENDPOINT" ] && [ -n "$API_KEY" ]; then
+    run_installer_cli "$install_path" install --all \
+      "$ENDPOINT_FLAG" \
+      --otlp-http-endpoint "$EFF_OTLP_HTTP" \
+      --compat-endpoint "$EFF_COMPAT" \
+      --otlp-grpc-endpoint "$OTLP_GRPC_ENDPOINT" \
+      --api-key "$API_KEY" || exit 1
+  elif [ -n "$OTLP_GRPC_ENDPOINT" ]; then
+    run_installer_cli "$install_path" install --all \
+      "$ENDPOINT_FLAG" \
+      --otlp-http-endpoint "$EFF_OTLP_HTTP" \
+      --compat-endpoint "$EFF_COMPAT" \
+      --otlp-grpc-endpoint "$OTLP_GRPC_ENDPOINT" || exit 1
+  elif [ -n "$API_KEY" ]; then
+    run_installer_cli "$install_path" install --all \
+      "$ENDPOINT_FLAG" \
+      --otlp-http-endpoint "$EFF_OTLP_HTTP" \
+      --compat-endpoint "$EFF_COMPAT" \
+      --api-key "$API_KEY" || exit 1
+  else
+    run_installer_cli "$install_path" install --all \
+      "$ENDPOINT_FLAG" \
+      --otlp-http-endpoint "$EFF_OTLP_HTTP" \
+      --compat-endpoint "$EFF_COMPAT" || exit 1
   fi
-  if [ -n "$API_KEY" ]; then
-    set -- "$@" --api-key "$API_KEY"
-  fi
-  run_installer_command "$@" || exit 1
 }
 
 run_installer_command() {
-  if tty_available; then
-    env EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 "$@" < /dev/tty
+  if [ -n "$MDM_FLAG" ] && [ -n "$USER_EMAIL" ]; then
+    if tty_available; then
+      run_with_target_context env \
+        EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 \
+        EXCEEDS_INK_DISABLE_AUTO_UPGRADE=1 \
+        EXCEEDS_INK_MDM=1 \
+        EXCEEDS_INK_MDM_USER_EMAIL="$USER_EMAIL" \
+        "$@" < /dev/tty
+    else
+      run_with_target_context env \
+        EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 \
+        EXCEEDS_INK_DISABLE_AUTO_UPGRADE=1 \
+        EXCEEDS_INK_MDM=1 \
+        EXCEEDS_INK_MDM_USER_EMAIL="$USER_EMAIL" \
+        "$@"
+    fi
+  elif [ -n "$MDM_FLAG" ]; then
+    if tty_available; then
+      run_with_target_context env \
+        EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 \
+        EXCEEDS_INK_DISABLE_AUTO_UPGRADE=1 \
+        EXCEEDS_INK_MDM=1 \
+        "$@" < /dev/tty
+    else
+      run_with_target_context env \
+        EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 \
+        EXCEEDS_INK_DISABLE_AUTO_UPGRADE=1 \
+        EXCEEDS_INK_MDM=1 \
+        "$@"
+    fi
+  elif tty_available; then
+    run_with_target_context env \
+      EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 \
+      EXCEEDS_INK_DISABLE_AUTO_UPGRADE=1 \
+      "$@" < /dev/tty
   else
-    env EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 "$@"
+    run_with_target_context env \
+      EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION=1 \
+      EXCEEDS_INK_DISABLE_AUTO_UPGRADE=1 \
+      "$@"
   fi
 }
 
@@ -690,6 +923,33 @@ path_contains_dir() {
     *":$target_dir:"*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+prepare_install_dir() {
+  install_dir="$1"
+  if mkdir -p "$install_dir" 2>/dev/null && [ -w "$install_dir" ]; then
+    USE_SUDO_INSTALL=0
+    return 0
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "Cannot write to $install_dir and sudo is not available." >&2
+    exit 1
+  fi
+  echo "Installing to $install_dir requires elevated permissions."
+  sudo mkdir -p "$install_dir" || exit 1
+  USE_SUDO_INSTALL=1
+}
+
+install_binary() {
+  install_src="$1"
+  install_path="$2"
+  if [ "${USE_SUDO_INSTALL:-0}" = "1" ]; then
+    sudo cp "$install_src" "$install_path"
+    sudo chmod 755 "$install_path"
+  else
+    cp "$install_src" "$install_path"
+    chmod 755 "$install_path"
+  fi
 }
 
 print_path_guidance() {
@@ -750,8 +1010,97 @@ print_post_install_summary() {
   fi
 }
 
+install_local_binary() {
+  local_binary="$1"
+  install_path="$2"
+
+  if [ ! -f "$local_binary" ]; then
+    echo "Local binary not found: $local_binary" >&2
+    exit 1
+  fi
+  if [ ! -x "$local_binary" ]; then
+    echo "Local binary is not executable: $local_binary" >&2
+    exit 1
+  fi
+
+  echo "Installing local binary from $local_binary..."
+  install_binary "$local_binary" "$install_path"
+}
+
+download_and_install_release_binary() {
+  TARGET="$(detect_target)"
+  RESOLVED_VERSION=""
+  RESOLVED_RELEASE_TAG=""
+  resolve_release_metadata
+  ASSET="exceeds-ink_${RESOLVED_VERSION}_${TARGET}.tar.gz"
+  VSIX_ASSET="exceeds-ink-vscode_${RESOLVED_VERSION}.vsix"
+  if [ -n "$DOWNLOAD_BASE" ]; then
+    BASE_URL="${DOWNLOAD_BASE%/}/${RESOLVED_RELEASE_TAG}"
+  else
+    BASE_URL="https://github.com/${REPO}/releases/download/${RESOLVED_RELEASE_TAG}"
+  fi
+
+  TMP_DIR="$(mktemp -d)"
+  cleanup() {
+    rm -rf "$TMP_DIR"
+  }
+  trap cleanup EXIT INT TERM
+
+  ARCHIVE_PATH="$TMP_DIR/$ASSET"
+  VSIX_PATH="$TMP_DIR/$VSIX_ASSET"
+  MANIFEST_PATH="$TMP_DIR/$RELEASE_MANIFEST_NAME"
+  SIGNATURE_PATH="$TMP_DIR/$RELEASE_MANIFEST_SIG_NAME"
+
+  if [ -n "$DOWNLOAD_BASE" ]; then
+    echo "Downloading ${ASSET} from ${BASE_URL}..."
+  else
+    echo "Downloading ${ASSET} from ${REPO}..."
+  fi
+  curl -fsSL "$BASE_URL/$ASSET" -o "$ARCHIVE_PATH"
+  curl -fsSL "$BASE_URL/$RELEASE_MANIFEST_NAME" -o "$MANIFEST_PATH"
+  curl -fsSL "$BASE_URL/$RELEASE_MANIFEST_SIG_NAME" -o "$SIGNATURE_PATH"
+  EXPECTED_SHA256="$(verify_signed_manifest "$MANIFEST_PATH" "$SIGNATURE_PATH" "$ASSET" "$RESOLVED_VERSION")" || exit 1
+  verify_archive_sha256 "$ARCHIVE_PATH" "$EXPECTED_SHA256"
+
+  if [ "$BINARY_ONLY" != "1" ] && [ "$INSTALL_VSCODE_EXTENSION" = "1" ]; then
+    echo "Downloading ${VSIX_ASSET} from ${BASE_URL}..."
+    curl -fsSL "$BASE_URL/$VSIX_ASSET" -o "$VSIX_PATH"
+    EXPECTED_VSIX_SHA256="$(verify_signed_manifest "$MANIFEST_PATH" "$SIGNATURE_PATH" "$VSIX_ASSET" "$RESOLVED_VERSION")" || exit 1
+    verify_archive_sha256 "$VSIX_PATH" "$EXPECTED_VSIX_SHA256"
+  fi
+
+  prepare_install_dir "$INSTALL_DIR"
+  tar -xzf "$ARCHIVE_PATH" -C "$TMP_DIR"
+  install_path="$INSTALL_DIR/exceeds-ink"
+  install_binary "$TMP_DIR/exceeds-ink" "$install_path"
+  echo "Installed exceeds-ink to $install_path"
+  ensure_user_home_layout "$install_path"
+
+  if [ "$BINARY_ONLY" != "1" ]; then
+    run_setup_and_install "$install_path"
+    if [ -f "$VSIX_PATH" ]; then
+      install_vscode_extension "$VSIX_PATH"
+    fi
+  fi
+
+  print_post_install_summary "$INSTALL_DIR" "$install_path" "$BINARY_ONLY"
+}
+
 if [ "${EXCEEDS_INK_INSTALLER_SOURCE_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
+fi
+
+if [ -n "$LOCAL_BINARY" ]; then
+  prepare_install_dir "$INSTALL_DIR"
+  install_path="$INSTALL_DIR/exceeds-ink"
+  install_local_binary "$LOCAL_BINARY" "$install_path"
+  echo "Installed exceeds-ink to $install_path"
+  ensure_user_home_layout "$install_path"
+  if [ "$BINARY_ONLY" != "1" ]; then
+    run_setup_and_install "$install_path"
+  fi
+  print_post_install_summary "$INSTALL_DIR" "$install_path" "$BINARY_ONLY"
+  exit 0
 fi
 
 need_cmd curl
@@ -760,59 +1109,4 @@ need_cmd mktemp
 need_cmd awk
 need_cmd openssl
 
-TARGET="$(detect_target)"
-RESOLVED_VERSION=""
-RESOLVED_RELEASE_TAG=""
-resolve_release_metadata
-ASSET="exceeds-ink_${RESOLVED_VERSION}_${TARGET}.tar.gz"
-VSIX_ASSET="exceeds-ink-vscode_${RESOLVED_VERSION}.vsix"
-if [ -n "$DOWNLOAD_BASE" ]; then
-  BASE_URL="${DOWNLOAD_BASE%/}/${RESOLVED_RELEASE_TAG}"
-else
-  BASE_URL="https://github.com/${REPO}/releases/download/${RESOLVED_RELEASE_TAG}"
-fi
-
-TMP_DIR="$(mktemp -d)"
-cleanup() {
-  rm -rf "$TMP_DIR"
-}
-trap cleanup EXIT INT TERM
-
-ARCHIVE_PATH="$TMP_DIR/$ASSET"
-VSIX_PATH="$TMP_DIR/$VSIX_ASSET"
-MANIFEST_PATH="$TMP_DIR/$RELEASE_MANIFEST_NAME"
-SIGNATURE_PATH="$TMP_DIR/$RELEASE_MANIFEST_SIG_NAME"
-
-if [ -n "$DOWNLOAD_BASE" ]; then
-  echo "Downloading ${ASSET} from ${BASE_URL}..."
-else
-  echo "Downloading ${ASSET} from ${REPO}..."
-fi
-curl -fsSL "$BASE_URL/$ASSET" -o "$ARCHIVE_PATH"
-curl -fsSL "$BASE_URL/$RELEASE_MANIFEST_NAME" -o "$MANIFEST_PATH"
-curl -fsSL "$BASE_URL/$RELEASE_MANIFEST_SIG_NAME" -o "$SIGNATURE_PATH"
-EXPECTED_SHA256="$(verify_signed_manifest "$MANIFEST_PATH" "$SIGNATURE_PATH" "$ASSET" "$RESOLVED_VERSION")" || exit 1
-verify_archive_sha256 "$ARCHIVE_PATH" "$EXPECTED_SHA256"
-
-if [ "$BINARY_ONLY" != "1" ] && [ "$INSTALL_VSCODE_EXTENSION" = "1" ]; then
-  echo "Downloading ${VSIX_ASSET} from ${BASE_URL}..."
-  curl -fsSL "$BASE_URL/$VSIX_ASSET" -o "$VSIX_PATH"
-  EXPECTED_VSIX_SHA256="$(verify_signed_manifest "$MANIFEST_PATH" "$SIGNATURE_PATH" "$VSIX_ASSET" "$RESOLVED_VERSION")" || exit 1
-  verify_archive_sha256 "$VSIX_PATH" "$EXPECTED_VSIX_SHA256"
-fi
-
-mkdir -p "$INSTALL_DIR"
-tar -xzf "$ARCHIVE_PATH" -C "$TMP_DIR"
-install_path="$INSTALL_DIR/exceeds-ink"
-cp "$TMP_DIR/exceeds-ink" "$install_path"
-chmod 755 "$install_path"
-
-echo "Installed exceeds-ink to $install_path"
-
-if [ "$BINARY_ONLY" != "1" ]; then
-  run_setup_and_install "$install_path"
-  install_vscode_extension "$VSIX_PATH"
-fi
-
-print_post_install_summary "$INSTALL_DIR" "$install_path" "$BINARY_ONLY"
-
+download_and_install_release_binary
