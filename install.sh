@@ -640,7 +640,7 @@ resolve_target_home() {
       return 0
     fi
   fi
-  getent passwd "$user" 2>/dev/null | cut -d: -f6 || eval "printf '%s' ~$user"
+  eval "printf '%s' \"~$user\""
 }
 
 ensure_user_home_layout() {
