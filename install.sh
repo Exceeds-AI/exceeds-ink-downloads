@@ -2,9 +2,9 @@
 set -eu
 
 # Public Exceeds collector (Vercel). Override both OTLP + compat together if you use a different host.
-DEFAULT_OTLP_HTTP="https://exceeds-ink-staging.vercel.app/api/v1/otlp"
-DEFAULT_COMPAT="https://exceeds-ink-staging.vercel.app/api/v1/ingest"
-TERMS_URL="https://exceeds-ink-staging.vercel.app/tos"
+DEFAULT_OTLP_HTTP="https://ink-staging.exceeds.ai/api/v1/otlp"
+DEFAULT_COMPAT="https://ink-staging.exceeds.ai/api/v1/ingest"
+TERMS_URL="https://ink-staging.exceeds.ai/tos"
 RELEASE_MANIFEST_NAME="release-manifest.json"
 RELEASE_MANIFEST_SIG_NAME="release-manifest.rsa.sig"
 
@@ -53,7 +53,7 @@ By default this installs the binary, clears any existing local machine registrat
 `exceeds-ink setup`, completes machine registration, then `exceeds-ink install --all` against the
 public Exceeds Vercel collector. Rerunning the installer intentionally re-pairs the machine.
 You must accept the Exceeds Ink Terms of Service before setup/install runs:
-https://exceeds-ink-staging.vercel.app/tos
+https://ink-staging.exceeds.ai/tos
 Afterward run `exceeds-ink init` in each git repo you want to track.
 
 Optional flags:
@@ -501,7 +501,7 @@ install_vscode_extension() {
 endpoint_override_flag() {
   endpoint="$1"
   case "$endpoint" in
-    https://exceeds-ink-staging.vercel.app/api/v1/ingest)
+    https://ink-staging.exceeds.ai/api/v1/ingest)
       printf '%s' "--official-endpoint"
       ;;
     http://127.0.0.1:*|http://localhost:*|https://127.0.0.1:*|https://localhost:*)

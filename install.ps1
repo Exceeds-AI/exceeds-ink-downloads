@@ -15,9 +15,9 @@ $ErrorActionPreference = "Stop"
 $RequireExplicitVersion = $true
 $StagingReleaseInstaller = $true
 
-$DefaultOtlpHttp = "https://exceeds-ink-staging.vercel.app/api/v1/otlp"
-$DefaultCompat = "https://exceeds-ink-staging.vercel.app/api/v1/ingest"
-$TermsUrl = "https://exceeds-ink-staging.vercel.app/tos"
+$DefaultOtlpHttp = "https://ink-staging.exceeds.ai/api/v1/otlp"
+$DefaultCompat = "https://ink-staging.exceeds.ai/api/v1/ingest"
+$TermsUrl = "https://ink-staging.exceeds.ai/tos"
 $ReleaseManifestName = "release-manifest.json"
 $ReleaseManifestSignatureName = "release-manifest.rsa.sig"
 $ProductionReleasePublicKeyPem = @'
