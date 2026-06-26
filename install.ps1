@@ -1,5 +1,5 @@
 param(
-    [string]$Version = $(if ($env:EXCEEDS_INK_VERSION) { $env:EXCEEDS_INK_VERSION } else { "latest" }),
+    [string]$Version = $(if ($env:EXCEEDS_INK_VERSION) { $env:EXCEEDS_INK_VERSION } else { "staging-v0.1.44-2" }),
     [string]$Repo = $(if ($env:EXCEEDS_INK_REPO) { $env:EXCEEDS_INK_REPO } else { "Exceeds-AI/exceeds-ink-downloads" }),
     [string]$DownloadBase = $env:EXCEEDS_INK_DOWNLOAD_BASE_URL,
     [string]$InstallDir = $(if ($env:EXCEEDS_INK_INSTALL_DIR) { $env:EXCEEDS_INK_INSTALL_DIR } else { (Join-Path $HOME ".exceeds-ink\bin") }),
