@@ -475,6 +475,57 @@ verify_archive_sha256() {
   fi
 }
 
+resolve_editor_cli() {
+  # Echoes a usable editor CLI path for the given editor key, or nothing.
+  # Checks PATH first, then well-known install locations so the extension is
+  # installed even when the editor's CLI was never added to PATH (common for
+  # VS Code on macOS, where users must run "Install 'code' command in PATH").
+  editor_key="$1"
+  if command -v "$editor_key" >/dev/null 2>&1; then
+    command -v "$editor_key"
+    return 0
+  fi
+
+  case "$editor_key" in
+    code)
+      candidates="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code
+$HOME/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code
+/usr/share/code/bin/code
+/usr/bin/code
+/snap/bin/code"
+      ;;
+    code-insiders)
+      candidates="/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code
+$HOME/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code
+/usr/share/code-insiders/bin/code-insiders
+/usr/bin/code-insiders
+/snap/bin/code-insiders"
+      ;;
+    cursor)
+      candidates="/Applications/Cursor.app/Contents/Resources/app/bin/cursor
+$HOME/Applications/Cursor.app/Contents/Resources/app/bin/cursor
+/usr/share/cursor/bin/cursor
+/usr/bin/cursor"
+      ;;
+    *)
+      candidates=""
+      ;;
+  esac
+
+  old_ifs="$IFS"
+  IFS='
+'
+  for candidate in $candidates; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      IFS="$old_ifs"
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  IFS="$old_ifs"
+  return 1
+}
+
 install_vscode_extension() {
   vsix_path="$1"
 
@@ -484,17 +535,18 @@ install_vscode_extension() {
   fi
 
   installed=0
-  for editor_cli in cursor code; do
-    if command -v "$editor_cli" >/dev/null 2>&1; then
-      echo "Installing Exceeds Ink extension with $editor_cli..."
+  for editor_key in cursor code code-insiders; do
+    editor_cli="$(resolve_editor_cli "$editor_key")"
+    if [ -n "$editor_cli" ]; then
+      echo "Installing Exceeds Ink extension with $editor_key ($editor_cli)..."
       NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--no-deprecation" "$editor_cli" --install-extension "$vsix_path" --force
-      echo "Installed Exceeds Ink extension with $editor_cli."
+      echo "Installed Exceeds Ink extension with $editor_key."
       installed=1
     fi
   done
 
   if [ "$installed" != "1" ]; then
-    echo "Skipping VS Code/Cursor extension install; neither cursor nor code is on PATH."
+    echo "Skipping VS Code/Cursor extension install; no VS Code, VS Code Insiders, or Cursor install was found."
   fi
 }
 
