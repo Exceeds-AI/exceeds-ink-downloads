@@ -373,7 +373,12 @@ detect_target() {
 
   case "$os" in
     Darwin) os_part="apple-darwin" ;;
-    Linux) os_part="unknown-linux-gnu" ;;
+    Linux)
+      case "$arch" in
+        x86_64|amd64) os_part="unknown-linux-musl" ;;
+        *) os_part="unknown-linux-gnu" ;;
+      esac
+      ;;
     *)
       echo "Unsupported OS for install.sh: $os" >&2
       echo "Use the PowerShell installer on Windows." >&2
