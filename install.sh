@@ -486,6 +486,11 @@ resolve_editor_cli() {
     return 0
   fi
 
+  # Sourced for tests: only honor PATH so fake CLIs and skip behavior stay deterministic.
+  if [ "${EXCEEDS_INK_INSTALLER_SOURCE_ONLY:-0}" = "1" ]; then
+    return 1
+  fi
+
   case "$editor_key" in
     code)
       candidates="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code
@@ -602,7 +607,8 @@ resolve_effective_endpoints() {
 }
 
 tty_available() {
-  [ -r /dev/tty ] && [ -w /dev/tty ] && : < /dev/tty >/dev/null 2>&1
+  # Subshell keeps a failed /dev/tty open from tripping set -e in dash.
+  ( : < /dev/tty ) >/dev/null 2>&1
 }
 
 confirm_terms_acceptance() {
