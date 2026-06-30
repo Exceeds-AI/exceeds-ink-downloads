@@ -9,7 +9,7 @@ RELEASE_MANIFEST_NAME="release-manifest.json"
 RELEASE_MANIFEST_SIG_NAME="release-manifest.rsa.sig"
 
 REPO="${EXCEEDS_INK_REPO:-Exceeds-AI/exceeds-ink-downloads}"
-INSTALL_DIR="${EXCEEDS_INK_INSTALL_DIR:-/usr/local/bin}"
+INSTALL_DIR="${EXCEEDS_INK_INSTALL_DIR:-}"
 VERSION="${EXCEEDS_INK_VERSION:-latest}"
 REQUIRE_EXPLICIT_VERSION=1
 STAGING_RELEASE_INSTALLER=1
@@ -58,7 +58,7 @@ Afterward run `exceeds-ink init` in each git repo you want to track.
 
 Optional flags:
   --version <version>             Install a specific version (for example: 0.1.0)
-  --install-dir <path>            Override install directory (default: /usr/local/bin)
+  --install-dir <path>            Override install directory (default: ~/.exceeds-ink/bin; /usr/local/bin with --mdm)
   --download-base <url>           Override the public asset base URL
   --repo <owner/name>             Override the GitHub repository used for releases
   --binary-only                   Only download and install the binary (skip setup / install --all)
@@ -201,6 +201,16 @@ validate_user_email() {
 }
 
 validate_user_email
+
+if [ -z "$INSTALL_DIR" ]; then
+  if [ -n "$MDM_FLAG" ] || [ "$(id -u)" -eq 0 ]; then
+    INSTALL_DIR="/usr/local/bin"
+  elif [ -n "${HOME:-}" ]; then
+    INSTALL_DIR="$HOME/.exceeds-ink/bin"
+  else
+    INSTALL_DIR="/usr/local/bin"
+  fi
+fi
 
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -715,6 +725,10 @@ ensure_user_home_layout() {
     exit 1
   fi
   legacy_binary="$target_home/.exceeds-ink/bin/exceeds-ink"
+  if [ "$legacy_binary" = "$install_path" ]; then
+    echo "Installed exceeds-ink to user bin $install_path"
+    return
+  fi
   if [ "$(id -u)" -eq 0 ] && [ "$target_user" != "$(id -un)" ]; then
     need_cmd sudo
     sudo -u "$target_user" mkdir -p "$target_home/.exceeds-ink/bin"
