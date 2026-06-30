@@ -32,7 +32,7 @@ FQIDAQAB
 -----END PUBLIC KEY-----
 '@
 
-if (-not $IsWindows) {
+if ((Get-Variable IsWindows -ErrorAction SilentlyContinue) -and -not $IsWindows) {
     throw "install.ps1 is intended for Windows. Use install.sh on macOS or Linux."
 }
 
