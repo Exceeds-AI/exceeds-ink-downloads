@@ -63,7 +63,10 @@ class DerReader {
         return $v
     }
 
-    [void] SkipContents() { $this.Pos += $this.ReadLength() }
+    [void] SkipContents() {
+        $len = $this.ReadLength()
+        $this.Pos += $len
+    }
 
     [byte[]] ReadInteger() {
         $this.AssertTag(0x02)
