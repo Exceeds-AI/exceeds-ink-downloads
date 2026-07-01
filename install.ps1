@@ -338,7 +338,7 @@ function Wait-MachineRegistration {
     }
 
     Write-Host "Starting machine pairing..."
-    $pairLines = & $BinaryPath machine pair 2>&1
+    $pairLines = & $BinaryPath machine pair --no-browser 2>&1
     if ($LASTEXITCODE -ne 0) {
         $msg = ($pairLines | Where-Object { $_ -is [string] }) -join ' '
         throw "exceeds-ink machine pair failed: $msg"
@@ -347,6 +347,11 @@ function Wait-MachineRegistration {
     $pairingId = Get-BinaryKvValue -Lines $pairLines -Key 'machine_pairing_id'
     if (-not $pairingId) {
         throw "Machine pairing did not return a pairing id."
+    }
+    $browserUrl = Get-BinaryKvValue -Lines $pairLines -Key 'machine_pairing_browser_url'
+    $isMdm = ($env:EXCEEDS_INK_MDM -in @('1', 'true', 'TRUE', 'yes', 'YES', 'on'))
+    if ($browserUrl -and -not $isMdm) {
+        Start-Process $browserUrl
     }
 
     $deadline  = (Get-Date).AddSeconds($TimeoutSeconds)
