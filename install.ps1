@@ -176,12 +176,20 @@ function Resolve-Version {
     throw "Failed to resolve the latest release for $Repository. Ensure releases include stable semver tags like vX.Y.Z."
 }
 
+function Get-NativeArch {
+    # PROCESSOR_ARCHITEW6432 is set by WoW64 to the native OS arch when a
+    # 32-bit process runs on a 64-bit host; fall back to PROCESSOR_ARCHITECTURE
+    # for native processes where WoW64 is not involved.
+    if ($env:PROCESSOR_ARCHITEW6432) { return $env:PROCESSOR_ARCHITEW6432 }
+    return $env:PROCESSOR_ARCHITECTURE
+}
+
 function Get-Target {
-    $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-    switch ($arch) {
-        "X64" { return "x86_64-pc-windows-msvc" }
-        "Arm64" { return "x86_64-pc-windows-msvc" }
-        default { throw "Unsupported Windows architecture: $arch" }
+    $processorArch = Get-NativeArch
+    switch ($processorArch) {
+        "AMD64" { return "x86_64-pc-windows-msvc" }
+        "ARM64" { return "x86_64-pc-windows-msvc" }
+        default { throw "Unsupported Windows architecture: $processorArch" }
     }
 }
 
@@ -380,7 +388,7 @@ try {
         Write-Host "  2. Run 'exceeds-ink init' inside each repo you want to track."
     }
     Write-Host "  On Windows, repo hooks require Git Bash (`bash`) on PATH."
-    if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq "Arm64") {
+    if ((Get-NativeArch) -eq "ARM64") {
         Write-Host "  Windows ARM currently installs the x64 binary."
     }
 }
