@@ -36,6 +36,45 @@ if ((Get-Variable IsWindows -ErrorAction SilentlyContinue) -and -not $IsWindows)
     throw "install.ps1 is intended for Windows. Use install.sh on macOS or Linux."
 }
 
+# Minimal DER reader used to import an RSA SubjectPublicKeyInfo PEM on .NET Framework 4.x,
+# where RSA.ImportFromPem does not exist. Must be a class (not a function) so that state
+# mutations are properly scoped.
+class DerReader {
+    [byte[]] $Bytes
+    [int]    $Pos
+
+    DerReader([byte[]]$bytes) { $this.Bytes = $bytes; $this.Pos = 0 }
+
+    [void] AssertTag([byte]$tag) {
+        if ($this.Bytes[$this.Pos] -ne $tag) {
+            throw "DER parse error: expected 0x$($tag.ToString('X2')) at offset $($this.Pos)"
+        }
+        $this.Pos++
+    }
+
+    [int] ReadLength() {
+        $b = [int]$this.Bytes[$this.Pos++]
+        if ($b -lt 0x80) { return $b }
+        $n = $b -band 0x7f
+        $v = 0
+        for ($k = 0; $k -lt $n; $k++) {
+            $v = ($v -shl 8) -bor [int]$this.Bytes[$this.Pos++]
+        }
+        return $v
+    }
+
+    [void] SkipContents() { $this.Pos += $this.ReadLength() }
+
+    [byte[]] ReadInteger() {
+        $this.AssertTag(0x02)
+        $len = $this.ReadLength()
+        [byte[]]$val = $this.Bytes[$this.Pos..($this.Pos + $len - 1)]
+        $this.Pos += $len
+        if ($val[0] -eq 0x00) { $val = $val[1..($val.Length - 1)] }
+        return $val
+    }
+}
+
 function ConvertTo-StableVersion {
     param([string]$Tag)
 
@@ -244,6 +283,33 @@ function Get-ReleasePublicKeyPem {
     return $ProductionReleasePublicKeyPem
 }
 
+function Import-RsaPublicKeyFromPem {
+    param([System.Security.Cryptography.RSA]$Rsa, [string]$Pem)
+
+    # RSA.ImportFromPem was added in .NET 5; Windows PowerShell 5.1 (.NET Framework 4.x)
+    # does not have it. Fall back to manual SubjectPublicKeyInfo DER parsing in that case.
+    if ([System.Security.Cryptography.RSA].GetMethods() | Where-Object Name -eq 'ImportFromPem') {
+        $Rsa.ImportFromPem($Pem)
+        return
+    }
+
+    $b64 = ($Pem -replace '-----[^-]+-----' -replace '\s+', '')
+    [byte[]]$spki = [Convert]::FromBase64String($b64)
+    $r = [DerReader]::new($spki)
+    $r.AssertTag(0x30); $r.ReadLength() | Out-Null  # outer SEQUENCE
+    $r.AssertTag(0x30); $r.SkipContents()           # algorithm identifier SEQUENCE
+    $r.AssertTag(0x03); $r.ReadLength() | Out-Null  # BIT STRING
+    $r.Pos++                                          # unused-bits octet
+    $r.AssertTag(0x30); $r.ReadLength() | Out-Null  # RSAPublicKey SEQUENCE
+    $modulus  = $r.ReadInteger()
+    $exponent = $r.ReadInteger()
+
+    $rsaParams = New-Object System.Security.Cryptography.RSAParameters
+    $rsaParams.Modulus  = $modulus
+    $rsaParams.Exponent = $exponent
+    $Rsa.ImportParameters($rsaParams)
+}
+
 function Get-SignedManifestAssetHash {
     param(
         [string]$ManifestPath,
@@ -267,7 +333,7 @@ function Get-SignedManifestAssetHash {
     $rsa = [System.Security.Cryptography.RSA]::Create()
     try {
         $pem = Get-ReleasePublicKeyPem
-        $rsa.ImportFromPem($pem.AsSpan())
+        Import-RsaPublicKeyFromPem -Rsa $rsa -Pem $pem
         $verified = $rsa.VerifyData(
             $manifestBytes,
             $signatureBytes,
