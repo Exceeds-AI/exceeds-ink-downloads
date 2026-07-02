@@ -32,8 +32,50 @@ FQIDAQAB
 -----END PUBLIC KEY-----
 '@
 
-if (-not $IsWindows) {
+if ((Get-Variable IsWindows -ErrorAction SilentlyContinue) -and -not $IsWindows) {
     throw "install.ps1 is intended for Windows. Use install.sh on macOS or Linux."
+}
+
+# Minimal DER reader used to import an RSA SubjectPublicKeyInfo PEM on .NET Framework 4.x,
+# where RSA.ImportFromPem does not exist. Must be a class (not a function) so that state
+# mutations are properly scoped.
+class DerReader {
+    [byte[]] $Bytes
+    [int]    $Pos
+
+    DerReader([byte[]]$bytes) { $this.Bytes = $bytes; $this.Pos = 0 }
+
+    [void] AssertTag([byte]$tag) {
+        if ($this.Bytes[$this.Pos] -ne $tag) {
+            throw "DER parse error: expected 0x$($tag.ToString('X2')) at offset $($this.Pos)"
+        }
+        $this.Pos++
+    }
+
+    [int] ReadLength() {
+        $b = [int]$this.Bytes[$this.Pos++]
+        if ($b -lt 0x80) { return $b }
+        $n = $b -band 0x7f
+        $v = 0
+        for ($k = 0; $k -lt $n; $k++) {
+            $v = ($v -shl 8) -bor [int]$this.Bytes[$this.Pos++]
+        }
+        return $v
+    }
+
+    [void] SkipContents() {
+        $len = $this.ReadLength()
+        $this.Pos += $len
+    }
+
+    [byte[]] ReadInteger() {
+        $this.AssertTag(0x02)
+        $len = $this.ReadLength()
+        [byte[]]$val = $this.Bytes[$this.Pos..($this.Pos + $len - 1)]
+        $this.Pos += $len
+        if ($val[0] -eq 0x00) { $val = $val[1..($val.Length - 1)] }
+        return $val
+    }
 }
 
 function ConvertTo-StableVersion {
@@ -244,6 +286,109 @@ function Get-ReleasePublicKeyPem {
     return $ProductionReleasePublicKeyPem
 }
 
+function Import-RsaPublicKeyFromPem {
+    param([System.Security.Cryptography.RSA]$Rsa, [string]$Pem)
+
+    # RSA.ImportFromPem was added in .NET 5; Windows PowerShell 5.1 (.NET Framework 4.x)
+    # does not have it. Fall back to manual SubjectPublicKeyInfo DER parsing in that case.
+    if ([System.Security.Cryptography.RSA].GetMethods() | Where-Object Name -eq 'ImportFromPem') {
+        $Rsa.ImportFromPem($Pem)
+        return
+    }
+
+    $b64 = ($Pem -replace '-----[^-]+-----' -replace '\s+', '')
+    [byte[]]$spki = [Convert]::FromBase64String($b64)
+    $r = [DerReader]::new($spki)
+    $r.AssertTag(0x30); $r.ReadLength() | Out-Null  # outer SEQUENCE
+    $r.AssertTag(0x30); $r.SkipContents()           # algorithm identifier SEQUENCE
+    $r.AssertTag(0x03); $r.ReadLength() | Out-Null  # BIT STRING
+    $r.Pos++                                          # unused-bits octet
+    $r.AssertTag(0x30); $r.ReadLength() | Out-Null  # RSAPublicKey SEQUENCE
+    $modulus  = $r.ReadInteger()
+    $exponent = $r.ReadInteger()
+
+    $rsaParams = New-Object System.Security.Cryptography.RSAParameters
+    $rsaParams.Modulus  = $modulus
+    $rsaParams.Exponent = $exponent
+    $Rsa.ImportParameters($rsaParams)
+}
+
+function Get-BinaryKvValue {
+    param([string[]]$Lines, [string]$Key)
+    $line = $Lines | Where-Object { $_ -match "^${Key}=(.*)$" } | Select-Object -First 1
+    if ($line) { return $line.Substring($Key.Length + 1) }
+    return ''
+}
+
+function Wait-MachineRegistration {
+    param(
+        [string]$BinaryPath,
+        [int]$TimeoutSeconds = 600,
+        [int]$PollSeconds = 5
+    )
+
+    $statusLines = & $BinaryPath machine status 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $msg = ($statusLines | Where-Object { $_ -is [string] }) -join ' '
+        throw "exceeds-ink machine status failed: $msg"
+    }
+    if ((Get-BinaryKvValue -Lines $statusLines -Key 'machine_registered') -eq 'yes') {
+        Write-Host "Machine already registered."
+        return
+    }
+
+    Write-Host "Starting machine pairing..."
+    $pairLines = & $BinaryPath machine pair --no-browser 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $msg = ($pairLines | Where-Object { $_ -is [string] }) -join ' '
+        throw "exceeds-ink machine pair failed: $msg"
+    }
+    $pairLines | Where-Object { $_ -is [string] } | ForEach-Object { Write-Host $_ }
+    $pairingId = Get-BinaryKvValue -Lines $pairLines -Key 'machine_pairing_id'
+    if (-not $pairingId) {
+        throw "Machine pairing did not return a pairing id."
+    }
+    $browserUrl = Get-BinaryKvValue -Lines $pairLines -Key 'machine_pairing_browser_url'
+    $isMdm = ($env:EXCEEDS_INK_MDM -in @('1', 'true', 'TRUE', 'yes', 'YES', 'on'))
+    if ($browserUrl -and -not $isMdm) {
+        Start-Process $browserUrl
+    }
+
+    $deadline  = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastStatus = ''
+    while ($true) {
+        $statusLines         = & $BinaryPath machine status 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $msg = ($statusLines | Where-Object { $_ -is [string] }) -join ' '
+            throw "exceeds-ink machine status failed: $msg"
+        }
+        $registered          = Get-BinaryKvValue -Lines $statusLines -Key 'machine_registered'
+        $pairingStatus       = Get-BinaryKvValue -Lines $statusLines -Key 'pairing_status'
+        $remotePairingStatus = Get-BinaryKvValue -Lines $statusLines -Key 'remote_pairing_status'
+
+        if ($registered -eq 'yes') {
+            Write-Host "Machine registration complete."
+            return
+        }
+
+        $effectiveStatus = if ($remotePairingStatus) { $remotePairingStatus }
+                           elseif ($pairingStatus)   { $pairingStatus }
+                           else                       { 'pending' }
+
+        if ($effectiveStatus -in @('rejected', 'expired')) {
+            throw "Machine registration failed with status: $effectiveStatus"
+        }
+        if ($effectiveStatus -ne $lastStatus) {
+            Write-Host "Waiting for machine approval (pairing $pairingId, status: $effectiveStatus)..."
+            $lastStatus = $effectiveStatus
+        }
+        if ((Get-Date) -ge $deadline) {
+            throw "Timed out waiting for machine registration approval ($TimeoutSeconds s)."
+        }
+        Start-Sleep -Seconds $PollSeconds
+    }
+}
+
 function Get-SignedManifestAssetHash {
     param(
         [string]$ManifestPath,
@@ -267,7 +412,7 @@ function Get-SignedManifestAssetHash {
     $rsa = [System.Security.Cryptography.RSA]::Create()
     try {
         $pem = Get-ReleasePublicKeyPem
-        $rsa.ImportFromPem($pem.AsSpan())
+        Import-RsaPublicKeyFromPem -Rsa $rsa -Pem $pem
         $verified = $rsa.VerifyData(
             $manifestBytes,
             $signatureBytes,
@@ -285,11 +430,11 @@ function Get-SignedManifestAssetHash {
     if ($manifest.version -ne $ExpectedVersion) {
         throw "release is not trusted: manifest version mismatch. Expected $ExpectedVersion but found $($manifest.version)."
     }
-    $asset = @($manifest.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1)
-    if (-not $asset) {
+    $matchedAsset = $manifest.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1
+    if (-not $matchedAsset) {
         throw "release is not trusted: manifest missing asset $AssetName."
     }
-    $hash = [string]$asset.sha256
+    $hash = [string]$matchedAsset.sha256
     if ($hash -notmatch '^[0-9A-Fa-f]{64}$') {
         throw "release is not trusted: manifest asset sha256 is invalid."
     }
@@ -322,9 +467,9 @@ try {
     } else {
         Write-Host "Downloading $asset from $Repo..."
     }
-    Invoke-WebRequest -Uri "$baseUrl/$asset" -OutFile $archivePath
-    Invoke-WebRequest -Uri "$baseUrl/$ReleaseManifestName" -OutFile $manifestPath
-    Invoke-WebRequest -Uri "$baseUrl/$ReleaseManifestSignatureName" -OutFile $signaturePath
+    Invoke-WebRequest -Uri "$baseUrl/$asset" -OutFile $archivePath -UseBasicParsing
+    Invoke-WebRequest -Uri "$baseUrl/$ReleaseManifestName" -OutFile $manifestPath -UseBasicParsing
+    Invoke-WebRequest -Uri "$baseUrl/$ReleaseManifestSignatureName" -OutFile $signaturePath -UseBasicParsing
 
     $expected = Get-SignedManifestAssetHash -ManifestPath $manifestPath -SignaturePath $signaturePath -AssetName $asset -ExpectedVersion $resolvedVersion
     $actual = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -342,33 +487,51 @@ try {
     if (-not $binaryOnlyRequested) {
         Confirm-TermsAcceptance
         $eff = Resolve-EffectiveEndpoints -Otlp $OtlpHttpEndpoint -Compat $CompatEndpoint -DefaultOtlp $DefaultOtlpHttp -DefaultCompat $DefaultCompat
-        Write-Host "Running exceeds-ink setup (collector: Exceeds Vercel or your overrides)..."
-        $setupArgs = @(
-            "setup",
-            "--otlp-http-endpoint", $eff.Otlp,
-            "--compat-endpoint", $eff.Compat
-        )
-        if ($OtlpGrpcEndpoint) {
-            $setupArgs += @("--otlp-grpc-endpoint", $OtlpGrpcEndpoint)
-        }
-        if ($ApiKey) {
-            $setupArgs += @("--api-key", $ApiKey)
-        }
-        & $binaryPath @setupArgs
 
-        Write-Host "Running exceeds-ink install --all..."
-        $installArgs = @(
-            "install", "--all",
-            "--otlp-http-endpoint", $eff.Otlp,
-            "--compat-endpoint", $eff.Compat
-        )
-        if ($OtlpGrpcEndpoint) {
-            $installArgs += @("--otlp-grpc-endpoint", $OtlpGrpcEndpoint)
+        $prevDisableAutoUpgrade = $env:EXCEEDS_INK_DISABLE_AUTO_UPGRADE
+        $prevInstallerMachineReg = $env:EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION
+        $env:EXCEEDS_INK_DISABLE_AUTO_UPGRADE = '1'
+        $env:EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION = '1'
+        try {
+            Write-Host "Clearing local machine registration state before reinstall..."
+            & $binaryPath machine clear
+            if ($LASTEXITCODE -ne 0) { throw "exceeds-ink machine clear failed (exit $LASTEXITCODE)" }
+
+            Write-Host "Running exceeds-ink setup (collector: Exceeds Vercel or your overrides)..."
+            $setupArgs = @(
+                "setup",
+                "--otlp-http-endpoint", $eff.Otlp,
+                "--compat-endpoint", $eff.Compat
+            )
+            if ($OtlpGrpcEndpoint) {
+                $setupArgs += @("--otlp-grpc-endpoint", $OtlpGrpcEndpoint)
+            }
+            if ($ApiKey) {
+                $setupArgs += @("--api-key", $ApiKey)
+            }
+            & $binaryPath @setupArgs
+            if ($LASTEXITCODE -ne 0) { throw "exceeds-ink setup failed (exit $LASTEXITCODE)" }
+
+            Wait-MachineRegistration -BinaryPath $binaryPath
+
+            Write-Host "Running exceeds-ink install --all..."
+            $installArgs = @(
+                "install", "--all",
+                "--otlp-http-endpoint", $eff.Otlp,
+                "--compat-endpoint", $eff.Compat
+            )
+            if ($OtlpGrpcEndpoint) {
+                $installArgs += @("--otlp-grpc-endpoint", $OtlpGrpcEndpoint)
+            }
+            if ($ApiKey) {
+                $installArgs += @("--api-key", $ApiKey)
+            }
+            & $binaryPath @installArgs
+            if ($LASTEXITCODE -ne 0) { throw "exceeds-ink install failed (exit $LASTEXITCODE)" }
+        } finally {
+            $env:EXCEEDS_INK_DISABLE_AUTO_UPGRADE = $prevDisableAutoUpgrade
+            $env:EXCEEDS_INK_INSTALLER_MACHINE_REGISTRATION = $prevInstallerMachineReg
         }
-        if ($ApiKey) {
-            $installArgs += @("--api-key", $ApiKey)
-        }
-        & $binaryPath @installArgs
     }
 
     $pathEntries = @($env:Path -split ";" | Where-Object { $_ })
@@ -387,7 +550,7 @@ try {
     } else {
         Write-Host "  2. Run 'exceeds-ink init' inside each repo you want to track."
     }
-    Write-Host "  On Windows, repo hooks require Git Bash (`bash`) on PATH."
+    Write-Host '  On Windows, repo hooks require Git Bash (`bash`) on PATH.'
     if ((Get-NativeArch) -eq "ARM64") {
         Write-Host "  Windows ARM currently installs the x64 binary."
     }
